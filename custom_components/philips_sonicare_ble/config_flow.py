@@ -288,12 +288,14 @@ class PhilipsSonicareConfigFlow(ConfigFlow, domain=DOMAIN):
 
             # Condor brushes (HX742X / Series 7100+) require BLE bonding
             # before the e50b… handshake's first CCCD write is accepted.
-            # The probe below only touches Battery / Device-Info chars
-            # which are open-read on these devices, so the bond
-            # requirement wouldn't surface as an auth error here.
-            # Trigger auto-pair preemptively when the Condor service is
-            # discovered and no bond exists yet — mirrors the ESP bridge's
-            # esp_ble_set_encryption() trigger on Condor detection.
+            # The probe below only touches Device-Info chars which are
+            # open-read on these devices, so the bond requirement wouldn't
+            # surface as an auth error here. Trigger auto-pair preemptively
+            # when the Condor service is discovered and no bond exists yet
+            # — mirrors the ESP bridge's esp_ble_set_encryption() trigger
+            # on Condor detection.
+            just_paired_in_place = False
+
             if SVC_CONDOR.lower() in gatt_services:
                 from .dbus_pairing import (
                     PairingError,
@@ -310,6 +312,7 @@ class PhilipsSonicareConfigFlow(ConfigFlow, domain=DOMAIN):
                         await async_pair_via_existing_client(client, address)
                         # let BlueZ settle SMP/encryption before reads
                         await asyncio.sleep(0.5)
+                        just_paired_in_place = True
                     except PairingError as err:
                         _LOGGER.warning(
                             "%s: in-place pairing failed (%s) — "
@@ -321,12 +324,20 @@ class PhilipsSonicareConfigFlow(ConfigFlow, domain=DOMAIN):
                             "Condor brush requires bonding"
                         ) from err
 
-            for char_uuid, key in (
-                (CHAR_BATTERY_LEVEL, "battery"),
+            # Battery is on the standard 0x180F service. Condor brushes
+            # don't expose it (battery comes via Condor port-property at
+            # runtime), so probing 0x2A19 there raises CharacteristicNotFound.
+            # Skip the probe unless the service is actually present.
+            probe_chars: list[tuple[str, str]] = []
+            if SVC_BATTERY.lower() in gatt_services:
+                probe_chars.append((CHAR_BATTERY_LEVEL, "battery"))
+            probe_chars += [
                 (CHAR_MODEL_NUMBER, "model"),
                 (CHAR_SERIAL_NUMBER, "serial"),
                 (CHAR_FIRMWARE_REVISION, "firmware"),
-            ):
+            ]
+
+            for char_uuid, key in probe_chars:
                 try:
                     raw = await self._read_with_auth_retry(
                         client, char_uuid, timeout=5.0
@@ -338,7 +349,7 @@ class PhilipsSonicareConfigFlow(ConfigFlow, domain=DOMAIN):
                             result[key] = raw.decode("utf-8", "ignore").strip("\x00 ")
                 except (BleakError, TimeoutError, Exception) as err:
                     err_msg = str(err).lower()
-                    if any(
+                    auth_error = any(
                         hint in err_msg
                         for hint in (
                             "0x05", "0x0e", "0x0f",
@@ -346,7 +357,13 @@ class PhilipsSonicareConfigFlow(ConfigFlow, domain=DOMAIN):
                             "insufficient auth", "insufficient enc",
                             "not permitted", "authentication", "security",
                         )
-                    ) or (client and client.is_connected):
+                    )
+                    # Only an explicit auth hint means "not paired". A read
+                    # that fails for any other reason (char absent, timeout,
+                    # transient stack issue) must NOT trigger the destructive
+                    # legacy auto-pair path, which would RemoveDevice() on
+                    # what may be a perfectly good bond.
+                    if auth_error and not just_paired_in_place:
                         raise NotPairedException from err
                     _LOGGER.debug("Failed to read %s: %s", key, err)
 
@@ -411,7 +428,21 @@ class PhilipsSonicareConfigFlow(ConfigFlow, domain=DOMAIN):
         except NotPairedException:
             pass
 
-        # Connection failed due to auth — try auto-pairing
+        # If a bond already exists, the destructive RemoveDevice in
+        # async_pair_and_trust would wipe it and leave the device
+        # unreachable until it re-advertises (Condor brushes only
+        # re-advertise on rotating RPAs, so the public identity is gone
+        # for ~30 s after the wipe). The probe failed for some other
+        # reason — surface that to the user instead of nuking the bond.
+        if await async_is_device_paired(address):
+            _LOGGER.warning(
+                "%s: capability read failed but a bond exists — "
+                "refusing to wipe it via legacy auto-pair",
+                address,
+            )
+            raise NotPairedException
+
+        # No bond yet — auto-pair is safe
         if await self._try_auto_pair(address):
             try:
                 result = await self._async_fetch_capabilities(address)
