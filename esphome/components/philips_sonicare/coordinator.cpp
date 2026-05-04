@@ -118,7 +118,9 @@ void SonicareCoordinator::on_loop(uint32_t now_ms) {
     this->unpair_until_ms_ = 0;
     if (this->set_enabled_cb_)
       this->set_enabled_cb_(true);
-    this->emit_status_("unpaired", {{"previous_mac", this->unpair_previous_mac_}});
+    this->emit_status_("unpaired",
+                       {{"previous_mac", this->unpair_previous_mac_},
+                        {"identity_source", this->identity_source_}});
     ESP_LOGI(this->log_tag_.c_str(),
              "Unpair complete — back to UUID-scan mode (was: %s)",
              this->unpair_previous_mac_.empty() ? "<none>"
@@ -365,6 +367,12 @@ void SonicareCoordinator::unpair() {
   if (this->unpair_cb_)
     this->unpair_cb_();
   this->identity_address_.clear();
+  // NVS-backed identity is gone → bridge is now unpaired. YAML-pinned
+  // identity stays "yaml" because the YAML config will re-apply at the
+  // next reboot regardless of NVS state.
+  if (this->identity_source_ == IDENTITY_SOURCE_NVS) {
+    this->identity_source_ = IDENTITY_SOURCE_NONE;
+  }
 
   // Synchronously clear cached connection state so a probe between unpair and
   // the actual GAP_DISCONNECT_EVT doesn't report a half-alive bridge (stale
@@ -650,8 +658,15 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
             // call the save-identity callback explicitly.
             if (!is_bonded && this->save_identity_cb_)
               this->save_identity_cb_();
+            // Mode-B auto-discovery just persisted an identity → flip the
+            // source from "none" to "nvs". Mode A and Mode-B-with-YAML-MAC
+            // stay "yaml" — they never pass through "none".
+            if (this->identity_source_ == IDENTITY_SOURCE_NONE) {
+              this->identity_source_ = IDENTITY_SOURCE_NVS;
+            }
             std::map<std::string, std::string> extra = {
                 {"identity_address", this->identity_address_},
+                {"identity_source", this->identity_source_},
                 {"bonding", is_bonded ? "bonded" : "open_gatt"},
             };
             if (!this->model_number_.empty())
@@ -1290,6 +1305,9 @@ std::map<std::string, std::string> SonicareCoordinator::collect_info_data() {
       {"notify_throttle_ms", std::string(throttle_str)},
       {"mode", this->mode_.empty() ? std::string(MODE_EXTERNAL) : this->mode_},
       {"identity_address", this->identity_address_},
+      {"identity_source",
+       this->identity_source_.empty() ? std::string(IDENTITY_SOURCE_NONE)
+                                       : this->identity_source_},
       {"pair_capable", pair_capable ? "true" : "false"},
       {"pair_mode_active", this->pair_mode_active_ ? "true" : "false"},
   };

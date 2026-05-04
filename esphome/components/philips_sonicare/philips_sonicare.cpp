@@ -33,7 +33,10 @@ void PhilipsSonicare::setup() {
     if (this->parent()) this->parent()->set_enabled(enabled);
   });
   this->coord_->set_mode(MODE_EXTERNAL);
-  // Mode A always has a fixed MAC from the ble_client: block.
+  // Mode A always has a fixed MAC from the ble_client: block — the
+  // identity is YAML-pinned and re-applied at every boot regardless
+  // of bond state, so it can never transition to "nvs" or "none".
+  this->coord_->set_identity_source(IDENTITY_SOURCE_YAML);
   if (this->parent()) {
     auto *bda = this->parent()->get_remote_bda();
     char mac[18];
@@ -64,15 +67,20 @@ void PhilipsSonicareStandalone::setup() {
   // NVS-restored addresses are loaded later inside the else branch. The flag
   // governs the unpair-callback's behavior (Fixed-MAC vs Auto-Discovery).
   this->has_yaml_mac_ = (this->address_ != 0);
+  // identity_source default — overwritten in the NVS branch below if the
+  // load succeeds. YAML-MAC users skip both branches and it stays "yaml".
+  std::string identity_source = IDENTITY_SOURCE_NONE;
   if (this->address_ != 0) {
     ESP_LOGI(this->log_tag_.c_str(), "Using configured MAC address — MAC mode");
     this->uuid_scan_mode_ = false;
+    identity_source = IDENTITY_SOURCE_YAML;
   } else {
     uint64_t stored = 0;
     if (this->pref_.load(&stored) && stored != 0) {
       ESP_LOGI(this->log_tag_.c_str(), "Loaded identity address from flash — MAC mode");
       this->set_address(stored);
       this->uuid_scan_mode_ = false;
+      identity_source = IDENTITY_SOURCE_NVS;
     } else {
       ESP_LOGI(this->log_tag_.c_str(), "No identity in flash — UUID scan mode (waiting for pair-mode)");
     }
@@ -84,6 +92,7 @@ void PhilipsSonicareStandalone::setup() {
     this->coord_->set_set_enabled_cb(
         [this](bool enabled) { this->set_enabled(enabled); });
     this->coord_->set_mode(MODE_STANDALONE);
+    this->coord_->set_identity_source(identity_source);
     if (!this->uuid_scan_mode_ && this->address_ != 0) {
       // We have a known identity (YAML-configured or NVS-restored). Format
       // for the identity_address field so HA can detect "already bound".

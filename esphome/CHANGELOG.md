@@ -1,5 +1,30 @@
 # ESP Bridge Changelog
 
+## v1.4.0 — 2026-05-04
+
+- Adds `identity_source` to `ble_get_info` and `pair_complete` event payloads.
+  Three values: `"yaml"` (Mode A or Mode B with `mac_address:` — identity is
+  pinned by YAML and re-applied on every boot), `"nvs"` (Mode B auto-discovery —
+  identity persisted to flash via `ble_pair_mode`), `"none"` (Mode B unpaired,
+  waiting for the next `ble_pair_mode`).
+
+  HA's in-place reconfigure flow needs this to decide whether a bridge can be
+  retargeted at runtime: only `"nvs"` is reconfigurable, since `ble_unpair`
+  wipes the NVS slot. YAML-pinned identities (Mode A and Mode B with a fixed
+  MAC) require a YAML rebuild + reflash to retarget — the integration aborts
+  the reconfigure flow with a clear "pinned by YAML" error in those cases.
+
+  State transitions during runtime: `none → nvs` on successful pair_complete
+  in Mode B auto-discovery; `nvs → none` on `ble_unpair` in Mode B
+  auto-discovery; `yaml` never transitions.
+
+  Cosmetic only for users on a single bridge — no behaviour change today.
+  The field is purely additive and existing flows ignore it, so HA-side
+  `MIN_BRIDGE_VERSION` stays at `"1.3.2"` for the remaining v0.10.x betas.
+  The bump to `"1.4.0"` will land with the next main HA release so that
+  the reconfigure flow and any other consumer can rely on the field being
+  present without an `if "identity_source" in info:` guard.
+
 ## v1.3.2 — 2026-05-01
 
 - Robust unpair: failed `ble_unpair` no longer wedges the BLE stack until

@@ -20,7 +20,7 @@ namespace philips_sonicare {
 class SonicareBridge;  // forward — defined in bridge.h
 
 // HA event names — used by both Worker and Bridge
-static const char *const PHILIPS_SONICARE_VERSION = "1.3.2";
+static const char *const PHILIPS_SONICARE_VERSION = "1.4.0";
 static const char *const EVENT_STATUS = "esphome.philips_sonicare_ble_status";
 static const char *const EVENT_DATA = "esphome.philips_sonicare_ble_data";
 static const char *const EVENT_SERVICES = "esphome.philips_sonicare_ble_services";
@@ -28,6 +28,14 @@ static const char *const EVENT_SERVICES = "esphome.philips_sonicare_ble_services
 // Bridge mode (reported in collect_info_data + heartbeat)
 static const char *const MODE_EXTERNAL = "external";    // Mode A
 static const char *const MODE_STANDALONE = "standalone"; // Mode B
+
+// Identity-source values (reported in collect_info_data so HA can decide
+// whether the bridge is reconfigurable). Mode A and Mode-B-with-YAML-MAC
+// pin the identity in YAML; Mode-B auto-discovery persists it in NVS;
+// "none" means the bridge is unpaired and ready for a new brush.
+static const char *const IDENTITY_SOURCE_YAML = "yaml";
+static const char *const IDENTITY_SOURCE_NVS = "nvs";
+static const char *const IDENTITY_SOURCE_NONE = "none";
 
 // BLE/GATT logic for a single Philips Sonicare brush. Mode-agnostic: works
 // with any esp32_ble_client::BLEClientBase parent (external ble_client::BLEClient
@@ -61,6 +69,14 @@ class SonicareCoordinator {
   // detect whether this Bridge supports the new pair-mode flow.
   void set_mode(const std::string &mode) { this->mode_ = mode; }
   void set_identity_address(const std::string &mac) { this->identity_address_ = mac; }
+  // Source of the bound identity — "yaml" (Mode A or Mode B with YAML MAC),
+  // "nvs" (Mode B auto-discovery, persisted), or "none" (Mode B unpaired).
+  // HA's reconfigure flow uses this to detect whether the bridge can be
+  // re-targeted at a different brush at runtime.
+  void set_identity_source(const std::string &source) {
+    this->identity_source_ = source;
+  }
+  const std::string &get_identity_source() const { return this->identity_source_; }
   // Called by HA service ble_pair_mode. enable=true arms UUID-scan for
   // timeout_s seconds; enable=false cancels. Only meaningful in Mode B.
   void set_pair_mode(bool enable, uint32_t timeout_s);
@@ -143,6 +159,7 @@ class SonicareCoordinator {
   // forwards them so HA can decide pair_capable.
   std::string mode_;       // MODE_EXTERNAL or MODE_STANDALONE
   std::string identity_address_;  // empty if no identity persisted
+  std::string identity_source_;   // IDENTITY_SOURCE_YAML / NVS / NONE
 
   // Pair-mode (Mode B only): UUID-scan only happens while this is true.
   bool pair_mode_active_{false};

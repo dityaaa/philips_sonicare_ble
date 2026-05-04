@@ -270,7 +270,7 @@ the previous value is kept.
 
 ### `ble_get_info`
 
-*Available since 1.2.0. Extended with `mode`, `pair_capable`, `pair_mode_active`, `identity_address` in 1.3.0.*
+*Available since 1.2.0. Extended with `mode`, `pair_capable`, `pair_mode_active`, `identity_address` in 1.3.0. `identity_source` added in 1.4.0.*
 
 Snapshot of bridge + brush state. **Primary capability-detection call** for HA
 during config flow.
@@ -289,12 +289,32 @@ during config flow.
 | `pair_capable` | `"true"` \| `"false"` | True only when standalone + no MAC + not currently connected |
 | `pair_mode_active` | `"true"` \| `"false"` | Currently in pair-mode window |
 | `identity_address` | string | Persistent BLE identity (post-bond). Empty if no identity persisted. Same value as in `pair_complete`. |
+| `identity_source` | `"yaml"` \| `"nvs"` \| `"none"` | Where the identity comes from — see [Identity sources](#identity-sources) below. |
 | `ble_connected` | `"true"` \| `"false"` | |
 | `paired` | `"true"` \| `"false"` | True if BD addr appears in `esp_ble_get_bond_device_list` |
 | `mac` | string | Currently used remote MAC (may be RPA pre-bond) |
 | `ble_name` | string (optional) | GAP 0x2A00 |
 | `model` | string (optional) | DeviceInfo 0x2A24 |
 | `uptime_s`, `free_heap`, `subscriptions`, `notify_throttle_ms`, `version`, `bridge_id` | misc | Diagnostic |
+
+#### Identity sources
+
+`identity_source` tells HA where the bridge's currently bound identity came
+from. The value is stable across the lifetime of the bond and used by HA's
+in-place reconfigure flow to decide whether the bridge can be retargeted at
+runtime.
+
+| Value | Provenance | Reconfigurable at runtime? |
+|---|---|---|
+| `"yaml"` | Mode A (`ble_client:` block) **or** Mode B with `mac_address:` in YAML. The identity is re-applied at every boot regardless of NVS state. | **No.** A YAML rebuild + reflash is required to retarget. |
+| `"nvs"` | Mode B auto-discovery — the brush was bonded via `ble_pair_mode` and the resulting identity was persisted to NVS. | **Yes.** `ble_unpair` wipes the NVS slot and the bridge becomes available for a new brush. |
+| `"none"` | Mode B without YAML MAC and without a persisted NVS identity — bridge is unpaired and waiting for `ble_pair_mode`. | n/a (already unbound) |
+
+State transitions during runtime:
+
+- `"none"` → `"nvs"` on successful `pair_complete` (Mode B auto-discovery only)
+- `"nvs"` → `"none"` on `ble_unpair` (Mode B auto-discovery only)
+- `"yaml"` never transitions — the YAML config is the source of truth and re-applies on every boot
 
 ### `ble_list_services`
 
@@ -340,7 +360,7 @@ Arm or cancel the UUID-scan + auto-pair window.
 | `status` | When | Extra fields |
 |---|---|---|
 | `pair_mode_started` | Pair-mode armed | `timeout_s` |
-| `pair_complete` | Pairing succeeded — identity persisted | `identity_address`, `model` (if read), `ble_name` (if read) |
+| `pair_complete` | Pairing succeeded — identity persisted | `identity_address`, `identity_source` (always `"nvs"` post-pair), `bonding` (`"bonded"` \| `"open_gatt"`), `model` (if read), `ble_name` (if read) |
 | `pair_timeout` | Window expired without successful pairing | — |
 | `pair_mode_stopped` | Cancelled via `enabled=false` | — |
 
@@ -363,6 +383,7 @@ Remove the BLE bond and clear any persisted identity. Bridge ends up with
 |---|---|
 | `status` | `"unpaired"` |
 | `previous_mac` | The MAC that was bonded |
+| `identity_source` | Post-unpair source — `"none"` (Mode B auto-discovery, fully unpaired), `"yaml"` (Mode A or Mode B with `mac_address:` — bond gone but YAML pin remains) |
 
 In `external` mode, only the BLE bond is removed — the YAML MAC is unaffected
 and the bridge will attempt to re-pair on the next connection.
