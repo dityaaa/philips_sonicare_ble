@@ -150,8 +150,15 @@ void SonicareCoordinator::on_loop(uint32_t now_ms) {
     // need a follow-up ble_get_info.
     if (had_auth && !this->identity_address_.empty()) {
       ESP_LOGW(this->log_tag_.c_str(), "Pair-mode timed out after AUTH_CMPL — emitting pair_complete anyway");
+      // Mode-B auto-discovery just persisted an identity → flip to "nvs".
+      // YAML-pinned identities never pass through "none", so the guard is
+      // a no-op for them.
+      if (this->identity_source_ == IDENTITY_SOURCE_NONE) {
+        this->identity_source_ = IDENTITY_SOURCE_NVS;
+      }
       this->emit_status_("pair_complete", {
           {"identity_address", this->identity_address_},
+          {"identity_source", this->identity_source_},
           {"bonding", "bonded"},
           {"note", "post_auth_no_probe"},
       });
@@ -852,8 +859,15 @@ void SonicareCoordinator::on_gap_event(esp_gap_ble_cb_event_t event,
           this->pair_mode_active_ = false;
           this->pair_mode_until_ms_ = 0;
           this->target_mac_.clear();
+          // Mode-B auto-discovery just persisted an identity → flip to "nvs".
+          // YAML-pinned identities never pass through "none", so the guard is
+          // a no-op for them.
+          if (this->identity_source_ == IDENTITY_SOURCE_NONE) {
+            this->identity_source_ = IDENTITY_SOURCE_NVS;
+          }
           this->emit_status_("pair_complete", {
               {"identity_address", this->identity_address_},
+              {"identity_source", this->identity_source_},
               {"bonding", "bonded"},
               {"note", "post_auth_no_probe"},
           });
