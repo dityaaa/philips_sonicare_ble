@@ -57,8 +57,10 @@ See [Configuration](#configuration) for setup instructions.
 | [HX991M](https://www.usa.philips.com/c-p/HX9911_91/9000-series-sonic-electric-toothbrush) | :white_check_mark: | :white_check_mark: | Community ([forum](http://community-smarthome.com/t/philips-sonicare-ble-zahnbuerste-in-home-assistant-mit-echtzeit-sensoren/10555/17), [#7](https://github.com/mtheli/philips_sonicare_ble/issues/7)) |
 | **DiamondClean Prestige** | | | |
 | [HX999X](https://www.usa.philips.com/c-p/HX9990_11/sonicare-9900-prestige-power-toothbrush-with-senseiq) | :white_check_mark: | :white_check_mark: | Maintainer, Community ([forum](https://community.home-assistant.io/t/philips-sonicare-ble-toothbrush-integration-with-30-sensors/999515/5)) |
+| **Series 7100** | | | |
+| [HX742X](https://www.usa.philips.com/c-p/HX7423_43/sonicare-7100) | :white_check_mark: | *not yet tested* | Community ([#4](https://github.com/mtheli/philips_sonicare_ble/issues/4)) |
 
-Any BLE-enabled Philips Sonicare toothbrush using the standard protocol should work (Sonicare For Kids, ExpertClean, DiamondClean Smart, DiamondClean 9000, DiamondClean Prestige, and more). The Series 5300–7400 (HX74xx) use a newer BLE protocol that is not yet supported. The integration auto-discovers compatible devices via BLE. If you have a different model — happy to hear your test results!
+Any BLE-enabled Philips Sonicare toothbrush using either the standard or the newer Series 7100+ protocol should work (Sonicare For Kids, ExpertClean, DiamondClean Smart, DiamondClean 9000, DiamondClean Prestige, Series 7100, and more). The integration auto-discovers compatible devices via BLE and selects the right protocol automatically. If you have a different model — happy to hear your test results!
 
 > [!NOTE]
 > Some models (ExpertClean, HX991M, DiamondClean Prestige) require **BLE bonding**. The integration detects this automatically and pairs the device during setup. Models like DiamondClean Smart and Sonicare For Kids use open GATT and connect without pairing.
