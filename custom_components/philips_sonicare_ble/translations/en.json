@@ -280,6 +280,15 @@
       },
       "adapter": {
         "name": "Adapter"
+      },
+      "adapter_type": {
+        "name": "Adapter Type",
+        "state": {
+          "direct_ble": "Direct Bluetooth",
+          "esp_bridge": "ESP Bridge",
+          "stock_proxy": "Bluetooth Proxy",
+          "unknown": "Unknown"
+        }
       }
     },
     "binary_sensor": {

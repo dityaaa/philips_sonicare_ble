@@ -226,7 +226,16 @@
         }
       },
       "rssi": { "name": "RSSI" },
-      "adapter": { "name": "Adapter" }
+      "adapter": { "name": "Adapter" },
+      "adapter_type": {
+        "name": "Adapter Type",
+        "state": {
+          "direct_ble": "Direct Bluetooth",
+          "esp_bridge": "ESP Bridge",
+          "stock_proxy": "Bluetooth Proxy",
+          "unknown": "Unknown"
+        }
+      }
     },
     "binary_sensor": {
       "is_brushing": { "name": "Brushing" },

@@ -87,6 +87,7 @@ async def async_setup_entry(
         SonicareHandleTimeSensor(coordinator, entry),
         SonicareActivitySensor(coordinator, entry),
         SonicareAdapterSensor(coordinator, entry),
+        SonicareAdapterTypeSensor(coordinator, entry),
     ]
 
     # Not available on Kids devices (HX63xx)
@@ -1048,6 +1049,30 @@ class SonicareAdapterSensor(PhilipsConnectionEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         return self.coordinator.transport.connection_path
+
+
+class SonicareAdapterTypeSensor(PhilipsConnectionEntity, SensorEntity):
+    """Classification of the active BLE transport.
+
+    Surfaces the same enum the coordinator uses internally to decide
+    whether an eager-SMP probe-read is required before the subscribe
+    burst. Useful as a diagnostic when troubleshooting connection
+    quality across mixed adapter setups.
+    """
+
+    _attr_translation_key = "adapter_type"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["direct_ble", "esp_bridge", "stock_proxy", "unknown"]
+    _attr_icon = "mdi:transit-connection-variant"
+
+    def __init__(self, coordinator: PhilipsSonicareCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{self._device_id}_adapter_type"
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.adapter_type
 
 
 # ---------------------------------------------------------------------------
