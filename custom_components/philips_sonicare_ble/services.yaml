@@ -26,3 +26,18 @@ write_characteristic:
       required: true
       selector:
         text:
+
+force_wake:
+  name: Force wake
+  description: >
+    Manually trigger the wake / reconnect path (debug). Useful on stock
+    bluetooth_proxy setups without a parallel local Bluetooth adapter,
+    where the D-Bus RSSI fallback can't fire and habluetooth deduplicates
+    the brush's static advertisements.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Optional — only needed when more than one Sonicare entry exists.
+      required: false
+      selector:
+        text:

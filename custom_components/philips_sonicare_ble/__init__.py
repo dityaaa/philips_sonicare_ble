@@ -31,6 +31,7 @@ PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SELECT, Platform.
 
 SERVICE_READ_CHARACTERISTIC = "read_characteristic"
 SERVICE_WRITE_CHARACTERISTIC = "write_characteristic"
+SERVICE_FORCE_WAKE = "force_wake"
 
 
 def _get_coordinator(hass: HomeAssistant, entry_id: str | None):
@@ -232,6 +233,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             supports_response=SupportsResponse.ONLY,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_FORCE_WAKE):
+        async def handle_force_wake(call: ServiceCall) -> ServiceResponse:
+            """Manually trigger the coordinator wake path.
+
+            Stand-in for the BlueZ D-Bus RSSI listener on transports that
+            can't fire it (stock bluetooth_proxy without a parallel hci0).
+            Used to exercise the reconnect / live-monitoring path during
+            debugging when the device's static advertisements get
+            deduplicated and the natural wake-via-ADV doesn't fire.
+            """
+            coord = _get_coordinator(hass, call.data.get("entry_id"))
+            if not coord:
+                return {"status": "no_device"}
+            already_connected = coord.transport.is_connected
+            _LOGGER.info(
+                "%s: manual wake via force_wake service "
+                "(connected=%s)",
+                coord.address,
+                already_connected,
+            )
+            coord._handle_wake()
+            return {
+                "status": "ok",
+                "address": coord.address,
+                "was_connected": already_connected,
+            }
+
+        hass.services.async_register(
+            DOMAIN, SERVICE_FORCE_WAKE, handle_force_wake,
+            schema=vol.Schema({
+                vol.Optional("entry_id"): str,
+            }),
+            supports_response=SupportsResponse.ONLY,
+        )
+
     _LOGGER.info("Philips Sonicare integration loaded - device: %s", address)
     return True
 
@@ -249,7 +285,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Remove services if no more entries
     if not hass.data[DOMAIN]:
-        for svc in (SERVICE_READ_CHARACTERISTIC, SERVICE_WRITE_CHARACTERISTIC):
+        for svc in (
+            SERVICE_READ_CHARACTERISTIC,
+            SERVICE_WRITE_CHARACTERISTIC,
+            SERVICE_FORCE_WAKE,
+        ):
             if hass.services.has_service(DOMAIN, svc):
                 hass.services.async_remove(DOMAIN, svc)
 
