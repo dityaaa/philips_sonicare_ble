@@ -52,7 +52,7 @@ esp32_ble_tracker:
     interval: 211ms
     window: 120ms
 
-# --- Philips Sonicare Component (Mode B — no MAC required) ---
+# --- Philips Sonicare Component (Auto-Discovery — no MAC required) ---
 #
 # The component scans for the Sonicare service UUID, bonds with the brush
 # you put into pair-mode via the HA setup flow, and stores the bond identity

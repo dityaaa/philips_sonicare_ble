@@ -52,7 +52,7 @@ esp32_ble_tracker:
     interval: 211ms
     window: 120ms
 
-# --- Philips Sonicare Components (Mode B — no MAC required) ---
+# --- Philips Sonicare Components (Auto-Discovery — no MAC required) ---
 #
 # Two independent bridge slots on the same ESP. Each scans for the
 # Sonicare service UUID and bonds with whichever brush is put into
