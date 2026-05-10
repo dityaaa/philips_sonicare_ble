@@ -110,6 +110,42 @@ void SonicareCoordinator::apply_smp_params_() {
   ESP_LOGD(this->log_tag_.c_str(), "SMP parameters applied (auth=0x%02X, io_cap=%d)", auth_req, io_cap);
 }
 
+void SonicareCoordinator::refresh_bond_status_() {
+  // Look up identity_address_ in the ESP-IDF bond NVS. The bond list is
+  // GLOBAL across all BLE clients on this chip; we must filter to bonds
+  // whose bd_addr matches *our* identity, otherwise a sibling brush's
+  // bond would falsely flip peer_is_bonded_ to true.
+  this->peer_is_bonded_ = false;
+  if (this->identity_address_.empty())
+    return;
+  uint8_t our_bda[6] = {0};
+  if (!parse_mac_to_bda(this->identity_address_, our_bda)) {
+    ESP_LOGW(this->log_tag_.c_str(),
+             "Cannot parse identity '%s' for bond lookup",
+             this->identity_address_.c_str());
+    return;
+  }
+  int total = esp_ble_get_bond_device_num();
+  if (total <= 0)
+    return;
+  auto *list = (esp_ble_bond_dev_t *) malloc(sizeof(esp_ble_bond_dev_t) * total);
+  if (list == nullptr)
+    return;
+  esp_err_t err = esp_ble_get_bond_device_list(&total, list);
+  if (err == ESP_OK) {
+    for (int i = 0; i < total; i++) {
+      if (memcmp(list[i].bd_addr, our_bda, 6) == 0) {
+        this->peer_is_bonded_ = true;
+        break;
+      }
+    }
+  }
+  free(list);
+  ESP_LOGD(this->log_tag_.c_str(), "Bond status for %s: %s",
+           this->identity_address_.c_str(),
+           this->peer_is_bonded_ ? "bonded" : "not bonded");
+}
+
 void SonicareCoordinator::on_loop(uint32_t now_ms) {
   // Unpair drain window — re-enable + emit `unpaired` after the BLE stack
   // had time to finish GAP_DISCONNECT and drain in-flight notifications.
@@ -374,6 +410,7 @@ void SonicareCoordinator::unpair() {
   if (this->unpair_cb_)
     this->unpair_cb_();
   this->identity_address_.clear();
+  this->peer_is_bonded_ = false;
   // NVS-backed identity is gone → bridge is now unpaired. YAML-pinned
   // identity stays "yaml" because the YAML config will re-apply at the
   // next reboot regardless of NVS state.
@@ -435,6 +472,7 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
       if (param->open.status == ESP_GATT_OK) {
         this->auth_completed_ = false;
         this->connect_time_ms_ = millis();
+        this->refresh_bond_status_();
         ESP_LOGI(this->log_tag_.c_str(), "Connected to Sonicare (%s)",
                  this->get_device_mac().c_str());
         this->connected_ = true;
@@ -641,7 +679,9 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
           const char *state_names[] = {"Off", "Standby", "Running", "Charging", "Shutdown"};
           uint8_t state = (param->read.value_len > 0) ? param->read.value[0] : 0xFF;
           const char *state_name = (state <= 4) ? state_names[state] : "Unknown";
-          ESP_LOGI(this->log_tag_.c_str(), "Pairing probe: open GATT (no pairing required) — handle state: %s (%d)",
+          ESP_LOGI(this->log_tag_.c_str(), "Pairing probe: %s — handle state: %s (%d)",
+                   this->auth_completed_ ? "bonded, encrypted reads succeed"
+                                         : "open GATT (no pairing required)",
                    state_name, state);
           // Probe success is the unified pair_complete trigger. By the time
           // the probe response arrives, GAP-Name and DeviceInfo-Model reads
@@ -843,6 +883,11 @@ void SonicareCoordinator::on_gap_event(esp_gap_ble_cb_event_t event,
         this->auth_completed_ = true;
         this->rapid_disconnect_count_ = 0;
         this->auth_fail_count_ = 0;
+        // Fresh bond just landed in NVS — re-read so subsequent writes use
+        // AUTH_REQ_NO_MITM. identity_address_ may still be empty on a brand-
+        // new pair (set a few lines below); the second refresh after assignment
+        // handles that case.
+        this->refresh_bond_status_();
         // Pair-mode: bond is in place. Emit pair_complete immediately so HA
         // can finish the config flow even if the brush goes to sleep before
         // service discovery completes (we used to wait for the probe-read
@@ -856,6 +901,9 @@ void SonicareCoordinator::on_gap_event(esp_gap_ble_cb_event_t event,
                    auth.bd_addr[0], auth.bd_addr[1], auth.bd_addr[2],
                    auth.bd_addr[3], auth.bd_addr[4], auth.bd_addr[5]);
           this->identity_address_ = identity_str;
+          // Re-check now that identity_address_ is populated — the earlier
+          // refresh ran before assignment (fresh-pair case had no identity yet).
+          this->refresh_bond_status_();
           this->pair_mode_active_ = false;
           this->pair_mode_until_ms_ = 0;
           this->target_mac_.clear();
@@ -1133,9 +1181,34 @@ void SonicareCoordinator::write_characteristic(const std::string &service_uuid,
     return;
   }
 
-  ESP_LOGI(this->log_tag_.c_str(), "Writing %s (handle 0x%04X): %s (%d bytes)",
+  // Pick the write method that matches the characteristic's declared
+  // properties. Default is WRITE_TYPE_RSP (legacy Sonicare chars all have
+  // the WRITE bit set), but Condor's e50b0007 (Client Config) is
+  // write-without-response only — using WRITE_TYPE_RSP there returns
+  // ATT WRITE_NOT_PERMIT (status=3) from the brush.
+  esp_gatt_write_type_t write_type = ESP_GATT_WRITE_TYPE_RSP;
+  bool has_write = chr->properties & ESP_GATT_CHAR_PROP_BIT_WRITE;
+  bool has_write_nr = chr->properties & ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
+  if (!has_write && has_write_nr) {
+    write_type = ESP_GATT_WRITE_TYPE_NO_RSP;
+  }
+
+  // For bonded peers, request AUTH_REQ_NO_MITM so the stack transparently
+  // re-encrypts the link from the stored bond when the peer reconnects
+  // under a rotated RPA. Without this, writes to encrypted chars (Condor
+  // e50b0007 after RPA rotation) fail with INSUFF_ENCRYPTION (status=15).
+  // For unbonded peers (open-GATT brushes like HX6340 Kids) we must NOT
+  // force encryption — those chars have no security permissions and a
+  // forced upgrade would break writes that work fine without it.
+  esp_gatt_auth_req_t auth_req =
+      this->peer_is_bonded_ ? ESP_GATT_AUTH_REQ_NO_MITM : ESP_GATT_AUTH_REQ_NONE;
+
+  ESP_LOGI(this->log_tag_.c_str(),
+           "Writing %s (handle 0x%04X): %s (%d bytes, %s, auth=%s)",
            char_uuid.c_str(), chr->handle,
-           hex_data.c_str(), bytes.size());
+           hex_data.c_str(), bytes.size(),
+           write_type == ESP_GATT_WRITE_TYPE_RSP ? "rsp" : "no_rsp",
+           this->peer_is_bonded_ ? "no_mitm" : "none");
 
   auto status = esp_ble_gattc_write_char(
       this->parent_->get_gattc_if(),
@@ -1143,8 +1216,8 @@ void SonicareCoordinator::write_characteristic(const std::string &service_uuid,
       chr->handle,
       bytes.size(),
       bytes.data(),
-      ESP_GATT_WRITE_TYPE_RSP,
-      ESP_GATT_AUTH_REQ_NONE);
+      write_type,
+      auth_req);
 
   if (status != ESP_OK) {
     ESP_LOGW(this->log_tag_.c_str(), "Write request failed: %d", status);

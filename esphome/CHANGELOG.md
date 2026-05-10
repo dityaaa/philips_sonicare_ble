@@ -1,5 +1,38 @@
 # ESP Bridge Changelog
 
+## v1.4.1 — 2026-05-10
+
+- Fixes Condor-protocol (HX742X / Series 7100) writes through the ESP bridge.
+  Two issues that had stayed invisible because Condor had only been validated
+  via the direct-BLE probe script, not through the bridge:
+
+  1. **Write-type mismatch:** `write_characteristic` used
+     `ESP_GATT_WRITE_TYPE_RSP` for every char. Condor's `e50b0007`
+     (Client Config — the channel-negotiation char) is declared
+     write-without-response only. The brush replied with ATT
+     `WRITE_NOT_PERMIT` (status=3), the channel never opened, and no
+     port data flowed. Fix: read the declared `properties` from the
+     `BLECharacteristic` and pick `WRITE_TYPE_NO_RSP` for write-NR-only
+     chars. Legacy chars (Sonicare service `477ea6xx-…4020/4022/4420`)
+     have the `WRITE` bit set and stay on `WRITE_TYPE_RSP`.
+
+  2. **Encryption not restored on RPA-rotated reconnect:** writes used
+     `ESP_GATT_AUTH_REQ_NONE`, which never asks Bluedroid to re-encrypt
+     the link from a stored bond. When the brush reconnected under a
+     fresh resolvable private address, encrypted Condor writes failed
+     with ATT `INSUFF_ENCRYPTION` (status=15) even though the bond was
+     intact in NVS. Fix: cache bond status per-peer (`peer_is_bonded_`,
+     refreshed on `OPEN_EVT`, on `AUTH_CMPL` success and on `unpair()`)
+     and request `ESP_GATT_AUTH_REQ_NO_MITM` for bonded peers. Unbonded
+     peers (open-GATT brushes like HX6340 Kids) keep `AUTH_REQ_NONE` —
+     forcing encryption on them would break writes that work fine
+     without it.
+
+  No protocol/state-machine changes; existing HX9992 / HX6340 / Prestige
+  flows are unaffected (Legacy chars keep `WRITE_TYPE_RSP`; HX6340 stays
+  on `AUTH_REQ_NONE`). HA-side `MIN_BRIDGE_VERSION` stays at `"1.4.0"` —
+  users with non-Condor brushes don't need to reflash.
+
 ## v1.4.0 — 2026-05-04
 
 - Adds `identity_source` to `ble_get_info` and `pair_complete` event payloads.

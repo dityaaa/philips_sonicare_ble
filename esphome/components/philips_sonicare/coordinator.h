@@ -20,7 +20,7 @@ namespace philips_sonicare {
 class SonicareBridge;  // forward — defined in bridge.h
 
 // HA event names — used by both Worker and Bridge
-static const char *const PHILIPS_SONICARE_VERSION = "1.4.0";
+static const char *const PHILIPS_SONICARE_VERSION = "1.4.1";
 static const char *const EVENT_STATUS = "esphome.philips_sonicare_ble_status";
 static const char *const EVENT_DATA = "esphome.philips_sonicare_ble_data";
 static const char *const EVENT_SERVICES = "esphome.philips_sonicare_ble_services";
@@ -218,6 +218,15 @@ class SonicareCoordinator {
   // Encryption: only request after INSUF_AUTH on read (not unconditionally)
   bool encryption_requested_{false};
 
+  // True when the peer identity is in the ESP-IDF bond NVS. Used by
+  // write_characteristic to decide auth_req: bonded → AUTH_REQ_NO_MITM
+  // (lets the stack transparently re-encrypt the link from the stored
+  // bond when the peer reconnects under a rotated RPA); not bonded →
+  // AUTH_REQ_NONE (open-GATT brushes like HX6340 Kids must not be
+  // forced into encryption). Refreshed on OPEN_EVT, on AUTH_CMPL
+  // success, and after unpair().
+  bool peer_is_bonded_{false};
+
   // Auth tracking
   bool auth_completed_{false};
   uint32_t connect_time_ms_{0};
@@ -234,6 +243,10 @@ class SonicareCoordinator {
   // Helpers
   void resubscribe_all_();
   void apply_smp_params_();
+  // Re-checks the ESP-IDF bond NVS for an entry matching identity_address_
+  // and caches the result in peer_is_bonded_. Safe to call when
+  // identity_address_ is empty (will set peer_is_bonded_ = false).
+  void refresh_bond_status_();
   uint16_t find_cccd_handle_(uint16_t char_handle);
   void emit_(const std::string &event_type,
               const std::map<std::string, std::string> &data);
