@@ -31,6 +31,7 @@ from .const import (
     CONF_SERVICES,
     TRANSPORT_ESP_BRIDGE,
     SVC_BRUSHHEAD,
+    SVC_CONDOR,
     SVC_STORAGE,
     SVC_SENSOR,
     SECTORS_PREMIUM,
@@ -110,7 +111,14 @@ async def async_setup_entry(
             SonicareTemperatureSensor(coordinator, entry),
         ])
 
-    # Brush head sub-device sensors (NFC brush head detection)
+    # Brush head sub-device sensors (NFC brush head detection).
+    #
+    # Classic devices expose a dedicated GATT service (SVC_BRUSHHEAD) and
+    # populate all nine NFC chars. Condor (HX742X+) delivers a subset via
+    # the BrushHead JSON port — Serial / Limit / Usage / RingId /
+    # NfcTagVersion confirmed live on FW 1.8.20.0; Date / Type / Payload
+    # are Classic-only and the sensors for them would stay unavailable,
+    # so they're omitted on Condor.
     if SVC_BRUSHHEAD.lower() in services:
         entities.extend([
             SonicareBrushHeadWearSensor(coordinator, entry),
@@ -122,6 +130,15 @@ async def async_setup_entry(
             SonicareBrushHeadNfcVersionSensor(coordinator, entry),
             SonicareBrushHeadTypeSensor(coordinator, entry),
             SonicareBrushHeadPayloadSensor(coordinator, entry),
+        ])
+    elif SVC_CONDOR.lower() in services:
+        entities.extend([
+            SonicareBrushHeadWearSensor(coordinator, entry),
+            SonicareBrushHeadUsageSensor(coordinator, entry),
+            SonicareBrushHeadLimitSensor(coordinator, entry),
+            SonicareBrushHeadSerialSensor(coordinator, entry),
+            SonicareBrushHeadRingIdSensor(coordinator, entry),
+            SonicareBrushHeadNfcVersionSensor(coordinator, entry),
         ])
 
     # RSSI sensor (direct BLE only — ESP bridge has no advertisement RSSI)

@@ -139,6 +139,7 @@ def describe_connection_path(
     except Exception as err:  # noqa: BLE001
         return f"unknown ({err})"
 ESP_STATUS_EVENT_NAME = "esphome.philips_sonicare_ble_status"
+ESP_SERVICES_EVENT_NAME = "esphome.philips_sonicare_ble_services"
 ESP_READ_TIMEOUT = 5.0
 ESP_HEARTBEAT_TIMEOUT = 45.0
 
@@ -830,6 +831,95 @@ class EspBridgeTransport(SonicareTransport):
             _LOGGER.warning("ESP get_bridge_info timeout")
             self._pending_info = None
             return None
+
+    @staticmethod
+    def _canonical_uuid(uuid: str) -> str:
+        """Return a UUID in canonical 128-bit lowercase form.
+
+        The bridge emits short-form UUIDs for assigned-number services
+        (``"0x180F"`` for Battery, ``"0x180A"`` for Device Information)
+        and full 128-bit strings for custom services. Our constants are
+        always 128-bit lowercase, so string equality against the
+        ``SVC_*`` values needs the short forms expanded to the standard
+        Bluetooth Base UUID before comparing.
+        """
+        u = uuid.strip().lower()
+        if u.startswith("0x"):
+            u = u[2:]
+        if len(u) == 4:
+            return f"0000{u}-0000-1000-8000-00805f9b34fb"
+        if len(u) == 8:
+            return f"{u}-0000-1000-8000-00805f9b34fb"
+        return u
+
+    async def list_services(self, timeout: float = 5.0) -> list[str]:
+        """Enumerate the connected device's GATT services via the bridge.
+
+        Calls ``ble_list_services`` and collects the resulting per-service
+        events (one ``esphome.philips_sonicare_ble_services`` event per
+        service, keyed by ``service_index`` / ``service_count``).
+
+        Returns the discovered service UUIDs in discovery order, each
+        normalised to the canonical 128-bit lowercase form so callers can
+        compare directly against ``SVC_*`` constants. Returns an empty
+        list on timeout or service-call failure — callers should treat
+        that as "couldn't determine" rather than "no services present",
+        since older bridges and disconnected sessions both look the same
+        from here.
+        """
+        if not self.is_connected:
+            return []
+
+        loop = self._hass.loop
+        result_future: asyncio.Future[list[str]] = loop.create_future()
+        collected: dict[int, str] = {}
+        expected_count: int | None = None
+
+        @callback
+        def _handler(event: Event) -> None:
+            nonlocal expected_count
+            data = event.data
+            mac = data.get("mac", "")
+            if (
+                mac
+                and self._detected_mac
+                and mac.upper() != self._detected_mac.upper()
+            ):
+                return
+            try:
+                count = int(data.get("service_count", "0"))
+                index = int(data.get("service_index", "0"))
+            except (TypeError, ValueError):
+                return
+            uuid = data.get("service_uuid") or ""
+            if uuid:
+                collected[index] = self._canonical_uuid(uuid)
+            if expected_count is None:
+                expected_count = count
+            if (
+                expected_count
+                and len(collected) >= expected_count
+                and not result_future.done()
+            ):
+                ordered = [collected[i] for i in sorted(collected)]
+                result_future.set_result(ordered)
+            elif expected_count == 0 and not result_future.done():
+                result_future.set_result([])
+
+        unsub = self._hass.bus.async_listen(ESP_SERVICES_EVENT_NAME, _handler)
+        try:
+            await self._hass.services.async_call(
+                "esphome",
+                self._svc_name("ble_list_services"),
+                {},
+                blocking=True,
+            )
+            return await asyncio.wait_for(result_future, timeout=timeout)
+        except (HomeAssistantError, asyncio.TimeoutError) as err:
+            _LOGGER.debug("ESP list_services failed: %s", err)
+            return []
+        finally:
+            unsub()
 
     async def set_notify_throttle(self, ms: int) -> None:
         if not self.is_connected:

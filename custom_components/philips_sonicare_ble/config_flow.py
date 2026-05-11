@@ -461,7 +461,26 @@ class PhilipsSonicareConfigFlow(ConfigFlow, domain=DOMAIN):
         esp_device_name: str,
         esp_bridge_id: str = "",
     ) -> dict[str, Any]:
-        """Read capabilities and probe services via ESP32 bridge."""
+        """Read capabilities and probe services via ESP32 bridge.
+
+        Two paths:
+
+        - **Deterministic** (bridge ≥ v1.3.0): ``ble_list_services``
+          returns the GATT service table in one shot. Protocol detection
+          (Condor / Classic) drops straight out of that list, and only
+          characteristics we actually care about are read (model number;
+          battery if the standard service is present). Failed reads of
+          characteristics that don't exist on a given model are avoided —
+          they only ever surfaced as bridge-side warnings.
+        - **Legacy probe** (bridge older than v1.3.0 or transient
+          failure): falls back to reading one probe char per known
+          Sonicare service, with Condor inferred by exclusion when only
+          Device Information answered. Kept for back-compat; the noisy
+          warnings come from this path.
+
+        Both paths populate the same ``found_services`` list; downstream
+        code is identical.
+        """
         transport = EspBridgeTransport(self.hass, address, esp_device_name, esp_bridge_id)
         try:
             await transport.connect()
@@ -469,41 +488,58 @@ class PhilipsSonicareConfigFlow(ConfigFlow, domain=DOMAIN):
             found_services: list[str] = []
             model_number: str | None = None
             battery: int | None = None
-            for svc_uuid, probe_char in SERVICE_PROBE_CHARS.items():
-                raw = await transport.read_char(probe_char)
-                if raw is not None:
-                    found_services.append(svc_uuid)
-                    if probe_char == CHAR_MODEL_NUMBER:
-                        model_number = raw.decode("utf-8", errors="replace").strip()
-                    elif probe_char == CHAR_BATTERY_LEVEL and raw:
-                        battery = raw[0]
+
+            services_from_bridge = await transport.list_services()
+            if services_from_bridge:
+                found_services = [s.lower() for s in services_from_bridge]
+                services_set = set(found_services)
+                # Model number — always emitted on Device Information.
+                raw_model = await transport.read_char(CHAR_MODEL_NUMBER)
+                if raw_model:
+                    model_number = raw_model.decode("utf-8", errors="replace").strip()
+                # Battery — only on the standard 0x180F service. Condor
+                # brushes route battery through their port-property layer
+                # instead and would 404 the 0x2A19 read.
+                if SVC_BATTERY.lower() in services_set:
+                    raw_batt = await transport.read_char(CHAR_BATTERY_LEVEL)
+                    if raw_batt:
+                        battery = raw_batt[0]
+            else:
+                # Legacy probe — old bridges without ble_list_services.
+                for svc_uuid, probe_char in SERVICE_PROBE_CHARS.items():
+                    raw = await transport.read_char(probe_char)
+                    if raw is not None:
+                        found_services.append(svc_uuid)
+                        if probe_char == CHAR_MODEL_NUMBER:
+                            model_number = raw.decode("utf-8", errors="replace").strip()
+                        elif probe_char == CHAR_BATTERY_LEVEL and raw:
+                            battery = raw[0]
+                # Condor-by-exclusion: the only readable Condor char
+                # (e50b0005) is optional — HX742X FW 1.8.20.0 omits it
+                # entirely, so a direct probe misses that device. If the
+                # device answered Device Information but none of the
+                # Classic feature services, the only supported protocol
+                # left is Condor.
+                classic_seen = any(
+                    svc in found_services for svc in (
+                        SVC_SONICARE, SVC_ROUTINE, SVC_STORAGE, SVC_SENSOR,
+                        SVC_BRUSHHEAD, SVC_DIAGNOSTIC, SVC_EXTENDED, SVC_BATTERY,
+                    )
+                )
+                if (
+                    model_number
+                    and not classic_seen
+                    and SVC_CONDOR not in found_services
+                ):
+                    found_services.append(SVC_CONDOR)
+                    _LOGGER.debug(
+                        "ESP bridge: inferred Condor protocol on %s (model=%s, no Classic services)",
+                        address, model_number,
+                    )
 
             if not found_services:
                 raise TransportError(
                     "Could not read any service via ESP bridge - toothbrush may not be connected"
-                )
-
-            # Condor-by-exclusion: the only readable Condor char (e50b0005)
-            # is optional — HX742X FW 1.8.20.0 omits it entirely, so a
-            # direct probe misses that device. We're already past the
-            # name-based Sonicare discovery, so if the device answered
-            # Device Information but none of the Classic feature services,
-            # the only supported protocol left is Condor.
-            classic_seen = any(
-                svc in found_services for svc in (
-                    SVC_SONICARE, SVC_ROUTINE, SVC_STORAGE, SVC_SENSOR,
-                    SVC_BRUSHHEAD, SVC_DIAGNOSTIC, SVC_EXTENDED, SVC_BATTERY,
-                )
-            )
-            if (
-                model_number
-                and not classic_seen
-                and SVC_CONDOR not in found_services
-            ):
-                found_services.append(SVC_CONDOR)
-                _LOGGER.debug(
-                    "ESP bridge: inferred Condor protocol on %s (model=%s, no Classic services)",
-                    address, model_number,
                 )
 
             # Serial

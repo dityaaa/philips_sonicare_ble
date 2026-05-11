@@ -117,7 +117,20 @@ def _map_battery(props: dict[str, Any], out: dict[str, Any]) -> None:
 
 
 def _map_brush_head(props: dict[str, Any], out: dict[str, Any]) -> None:
-    """Port ``BrushHead`` — NFC-sourced head identity + wear."""
+    """Port ``BrushHead`` — NFC-sourced head identity + wear.
+
+    Observed payload on HX742X FW 1.8.20.0 (lonlazer's GetProps probe,
+    Issue #4 comment 4299950901)::
+
+        {"NfcTagVersion":[2,1], "FactoryMode":2,
+         "SerialNumber":[4,43,197,178,75,30,144],
+         "LifetimeLimit":21600, "LifetimeUsage":16777, "RingId":4}
+
+    ``Date``, ``Type`` and ``Payload`` aren't present in the Condor port
+    (they exist as separate GATT chars on Classic only), so the sensors
+    keying off them stay unavailable for Condor devices. ``FactoryMode``
+    is a build-tag flag with no user-facing equivalent.
+    """
     v = props.get("SerialNumber")
     if isinstance(v, list) and v:
         out["brushhead_serial"] = ":".join(f"{b:02X}" for b in v)
@@ -127,6 +140,9 @@ def _map_brush_head(props: dict[str, Any], out: dict[str, Any]) -> None:
         out["brushhead_lifetime_usage"] = v
     if (v := props.get("RingId")) is not None:
         out["brushhead_ring_id"] = v
+    v = props.get("NfcTagVersion")
+    if isinstance(v, list) and v:
+        out["brushhead_nfc_version"] = ".".join(str(b) for b in v)
 
 
 def _map_session_storage(props: dict[str, Any], out: dict[str, Any]) -> None:
