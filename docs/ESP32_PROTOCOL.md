@@ -223,10 +223,17 @@ Enable notifications/indications on a characteristic.
 | **Args** | `service_uuid: string`, `char_uuid: string` |
 | **Side-effect** | `esp_ble_gattc_register_for_notify` + CCCD write. Idempotent — duplicate subscribes are silently ignored. |
 | **Reply** | None directly. Each notification triggers a `_ble_data` event with `uuid`, `payload`, `mac`, `bridge_id`. |
-| **Throttling** | Per-characteristic minimum interval, default 500 ms. Tunable via `ble_set_throttle`. |
+| **Throttling** | Per-characteristic minimum interval, default 500 ms. Tunable via `ble_set_throttle`. Bypassed for the three Condor transport chars (`e50b0006`, `e50b0003`, `e50b0002`) since 1.4.2 — see below. |
 
 Subscriptions are tracked in `desired_subscriptions_` and **automatically
 restored** on reconnect.
+
+**Throttle bypass (since 1.4.2):** the three Condor (HX742X+) notify chars
+ignore `notify_throttle_ms_`. `SERVER_CFG` (`e50b0006`) delivers two
+handshake replies within ~100 ms of each other; `TX` (`e50b0003`) carries
+multi-chunk framed payloads; `RX_ACK` (`e50b0002`) is per-frame flow
+control. Throttling any of them silently dropped data and stalled the
+V4 handshake. Classic CCCD streams still throttle as before.
 
 ### `ble_unsubscribe`
 
@@ -267,6 +274,9 @@ Adjust the minimum interval between notification events forwarded to HA.
 
 Invalid values (non-numeric, trailing junk) are rejected with a log warning;
 the previous value is kept.
+
+Since 1.4.2 the throttle does not apply to the three Condor transport chars
+(`e50b0006`, `e50b0003`, `e50b0002`); see [`ble_subscribe`](#ble_subscribe).
 
 ### `ble_get_info`
 
