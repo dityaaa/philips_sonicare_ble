@@ -1,5 +1,39 @@
 # ESP Bridge Changelog
 
+## v1.4.2 — 2026-05-11
+
+- Fixes Condor-protocol (HX742X / Series 7100) via the ESP bridge — the
+  V4 handshake stalled after Phase 1 and no port data ever flowed.
+  Reported by @itchensen on issue #13.
+
+  Root cause: the bridge's per-handle notification throttle (default 500 ms)
+  silently dropped notifications that arrived within the throttle window
+  on the same characteristic. Condor is built on three notify channels
+  that all violate this assumption:
+
+  - **SERVER_CFG (`e50b0006`)** — the V4 handshake delivers two
+    responses on this handle ~100 ms apart (v-negotiation reply, then
+    channel-config reply after the `FFFFFFFF` write). The throttle let
+    the first through and dropped the second, so the Python side timed
+    out waiting on `_await_server_cfg(6)` and tore the session down.
+  - **TX (`e50b0003`)** — framed protocol; a single JSON-port update
+    spans several back-to-back notifications. Throttling fragments
+    frames, leaving the Python reassembler with permanently incomplete
+    buffers.
+  - **RX_ACK (`e50b0002`)** — per-frame flow-control acks from the
+    device; dropping any stalls the send window.
+
+  Fix: skip the throttle entirely for these three UUIDs. Classic-protocol
+  CCCD streams still throttle (the dampening was added for those in the
+  first place), and Condor already coalesces at the protocol layer via
+  ChangeIndication deltas, so the bridge-side rate-limit is redundant
+  for it.
+
+  No HA-side change required. `MIN_BRIDGE_VERSION` stays at `"1.4.0"` —
+  users with Classic brushes (HX9992 / HX6340 / Prestige) are unaffected
+  and don't need to reflash. Condor users on the bridge **must** update
+  to v1.4.2 — the bug makes their integration non-functional otherwise.
+
 ## v1.4.1 — 2026-05-10
 
 - Fixes Condor-protocol (HX742X / Series 7100) writes through the ESP bridge.

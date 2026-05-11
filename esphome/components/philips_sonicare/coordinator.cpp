@@ -826,14 +826,34 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
       if (it == this->notify_map_.end())
         break;
 
-      // Throttle: max 1 event per notify_throttle_ms_ per characteristic
-      uint32_t now = millis();
-      auto last_it = this->last_notify_ms_.find(param->notify.handle);
-      if (last_it != this->last_notify_ms_.end() &&
-          (now - last_it->second) < this->notify_throttle_ms_) {
-        break;
+      // Throttle bypass for Condor (e50b…) chars. The framed V4 protocol
+      // is fundamentally incompatible with per-handle rate-limiting:
+      //   • SERVER_CFG (e50b0006) delivers two handshake responses on the
+      //     same handle within ~100 ms (v-negotiation + channel-config).
+      //   • TX (e50b0003) carries fragmented frames — a single JSON port
+      //     update can span several notifications arriving back-to-back.
+      //   • RX_ACK (e50b0002) is the per-frame flow-control ack from the
+      //     device; dropping any of these stalls the send window.
+      // Throttling any of them silently drops handshake responses or
+      // breaks frame reassembly. The throttle's value (dampening chatty
+      // Classic CCCD streams) doesn't apply here — Condor already has
+      // protocol-level coalescing through ChangeIndication deltas.
+      const std::string &char_uuid = it->second;
+      bool bypass_throttle =
+          char_uuid == "e50b0006-af04-4564-92ad-fef019489de6" ||
+          char_uuid == "e50b0003-af04-4564-92ad-fef019489de6" ||
+          char_uuid == "e50b0002-af04-4564-92ad-fef019489de6";
+
+      if (!bypass_throttle) {
+        // Throttle: max 1 event per notify_throttle_ms_ per characteristic
+        uint32_t now = millis();
+        auto last_it = this->last_notify_ms_.find(param->notify.handle);
+        if (last_it != this->last_notify_ms_.end() &&
+            (now - last_it->second) < this->notify_throttle_ms_) {
+          break;
+        }
+        this->last_notify_ms_[param->notify.handle] = now;
       }
-      this->last_notify_ms_[param->notify.handle] = now;
 
       std::string hex_payload =
           format_hex(param->notify.value, param->notify.value_len);
