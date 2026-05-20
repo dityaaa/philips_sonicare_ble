@@ -23,6 +23,10 @@
   See [esphome/README.md#per-slot-defaults](README.md#per-slot-defaults-friendly_name-and-area)
   for usage.
 
+- **Boot log shows `friendly_name` and `area`** alongside `Bridge ID`
+  in `dump_config`. Quick verification that the YAML config you wrote
+  is actually what got flashed.
+
 ## v1.4.3 — 2026-05-19
 
 - **Python-component fix, no firmware change.** Reflash optional — the
