@@ -664,7 +664,11 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
         ESP_LOGI(this->log_tag_.c_str(),
                  "MTU negotiated — triggering deferred eager SMP encryption");
         this->pending_eager_smp_ = false;
-        this->request_encryption_(ESP_BLE_SEC_ENCRYPT);
+        // Use ENCRYPT_MITM to match the security level of the existing bond
+        // (Bonds are created via the probe-read INSUF_AUTH path which uses
+        // ENCRYPT_MITM — HX960V observed failing with reason 0x61 SMP_UNKNOWN_ERR
+        // when eager SMP requested plain ENCRYPT against a MITM-stored bond).
+        this->request_encryption_(ESP_BLE_SEC_ENCRYPT_MITM);
       }
       break;
     }
