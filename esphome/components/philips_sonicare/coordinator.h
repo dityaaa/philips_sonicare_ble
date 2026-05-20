@@ -219,6 +219,11 @@ class SonicareCoordinator {
 
   // Encryption: only request after INSUF_AUTH on read (not unconditionally)
   bool encryption_requested_{false};
+  // Eager-SMP deferral: SEARCH_CMPL sets this for bonded peers; the
+  // CFG_MTU_EVT handler then fires request_encryption_(). Running SMP
+  // before MTU negotiation completes races with some brushes (HX960V
+  // observed losing the pairing request → supervision timeout).
+  bool pending_eager_smp_{false};
   void request_encryption_(esp_ble_sec_act_t sec_act);
 
   // True when the peer identity is in the ESP-IDF bond NVS. Used by

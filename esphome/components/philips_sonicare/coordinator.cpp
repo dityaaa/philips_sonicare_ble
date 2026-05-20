@@ -515,6 +515,7 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
       this->pending_service_uuid_.clear();
       this->retry_read_after_auth_ = false;
       this->encryption_requested_ = false;
+      this->pending_eager_smp_ = false;
       this->name_handle_ = 0;
       this->notify_map_.clear();
       this->cccd_map_.clear();
@@ -606,9 +607,15 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
             "477ea600-a260-11e4-ae37-0002a5d54010");
         auto *chr = this->parent_->get_characteristic(sonicare_svc, handle_state);
         if (chr && this->peer_is_bonded_ && !this->encryption_requested_) {
-          ESP_LOGI(this->log_tag_.c_str(),
-                   "Bonded Classic peer — eagerly initiating SMP encryption");
-          this->request_encryption_(ESP_BLE_SEC_ENCRYPT);
+          // Defer eager SMP until after MTU negotiation completes.
+          // HX960V races with concurrent MTU negotiation: SMP request fired
+          // immediately after SEARCH_CMPL is lost on the brush side (no
+          // response → supervision timeout at ~6 s → disconnect loop).
+          // HX9992 is robust to the race but HX960V is not, so we wait for
+          // ESP_GATTC_CFG_MTU_EVT before kicking off SMP.
+          ESP_LOGD(this->log_tag_.c_str(),
+                   "Bonded Classic peer — eager SMP queued for post-MTU");
+          this->pending_eager_smp_ = true;
         } else if (chr) {
           this->probe_handle_ = chr->handle;
           esp_ble_gattc_read_char(
@@ -644,6 +651,20 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
         this->pending_calls_.clear();
         for (auto &fn : pending)
           fn();
+      }
+      break;
+    }
+
+    case ESP_GATTC_CFG_MTU_EVT: {
+      // MTU negotiation just completed. If SEARCH_CMPL deferred an eager
+      // SMP because peer_is_bonded_, fire it now — running SMP before MTU
+      // settles loses the pairing request on the brush side for some
+      // models (HX960V observed; HX9992 robust).
+      if (this->pending_eager_smp_) {
+        ESP_LOGI(this->log_tag_.c_str(),
+                 "MTU negotiated — triggering deferred eager SMP encryption");
+        this->pending_eager_smp_ = false;
+        this->request_encryption_(ESP_BLE_SEC_ENCRYPT);
       }
       break;
     }
