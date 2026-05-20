@@ -1,5 +1,45 @@
 # ESP Bridge Changelog
 
+## v1.5.1 — 2026-05-20
+
+- **Optional GATT cache persistence to NVS** for fast reconnects.
+  Contributed by @jjsmackay via PR #17 (Improvement 3 of 3).
+
+  Off by default — opt in via `CONFIG_BT_GATTC_CACHE_NVS_FLASH: "y"` in
+  your `sdkconfig_options`. First connect to a peer pays the full ~4 s
+  service discovery (cache miss); subsequent reconnects to the same
+  peer hit the NVS cache in single-digit milliseconds.
+
+  Live-tested 2026-05-20 across four brush models (HX9992 bonded /
+  HX992X unbonded / HX6340 Kids unbonded / HX960V bonded), all PUBLIC
+  BLE addresses. Measured SDP-phase reduction after one warmup cycle:
+
+  | Brush | SDP baseline | SDP cache-hit | Total reconnect win |
+  |---|---|---|---|
+  | HX9992 (Prestige 9900) | 3.4 s | 8 ms | 5.7 s → 2.8 s |
+  | HX992X (Sonicare 9000) | 3.9 s | 1 ms | 6.1 s → 2.4 s |
+  | HX6340 (Sonicare for Kids) | 5.8 s | 1 ms | 9.1 s → 1.0 s |
+  | HX960V (ExpertClean 7300) | 3.7 s | 2 ms | 6.7 s → 3.3 s |
+
+  Cache works for both bonded and unbonded peers when the BLE address
+  is stable (PUBLIC). The "keyed by bonded peer identity" claim in the
+  PR description turns out to be more permissive than expected — any
+  stable BDA gets cached. RPA peers (rotating identity) would not
+  benefit; none of the test brushes use RPA.
+
+  Requires the `bluedroid_null_fix.py` pre-build script (already in
+  this repo's `esphome/` directory) to dodge an ESP-IDF 5.5 crash
+  inside `bta_gattc_cache_save` when the flag is enabled. The same
+  script covers the `bluetooth_proxy` coexistence crash
+  ([esphome#15783](https://github.com/esphome/esphome/issues/15783)),
+  so the `bluetooth_proxy:` comment block in the reference YAMLs is
+  simplified to a single-line opt-in.
+
+  Users opting in need to drop `bluedroid_null_fix.py` next to their
+  YAML (HAOS: `/config/esphome/`) and re-flash. No HA-side change
+  required; `MIN_BRIDGE_VERSION` stays at `1.4.0` since this is a
+  purely additive bridge feature.
+
 ## v1.5.0 — 2026-05-20
 
 - **Per-slot `friendly_name:` and `area:` fields** for each `philips_sonicare:`
