@@ -1,5 +1,45 @@
 # ESP Bridge Changelog
 
+## v1.5.3 — 2026-05-22
+
+- **Reconnect-lag improvements (PR #17 Improvements 1+2)**, contributed
+  by @jjsmackay. Together with the v1.5.1 NVS cache (Improvement 3),
+  this completes the PR #17 reconnect-time optimization series:
+
+  - **Pipelined GATT reads** (Improvement 1a) — fire multiple outstanding
+    reads instead of strictly sequential, shaving the post-connect
+    read-storm.
+  - **Race-rescue for reads racing the SMP handshake** (Improvement 1b)
+    — a read that fires before encryption is up gets re-queued instead
+    of dropped, no longer losing the first poll cycle on bonded brushes.
+  - **Eager SMP on `SEARCH_CMPL` for bonded Classic peers** (Improvement
+    2a) — kick the auth exchange the instant service discovery
+    completes, rather than waiting for the first auth-required read to
+    trigger it lazily.
+
+  Two maintainer-side fixes layered on top of jjsmackay's submission,
+  needed to make eager SMP reliable on bonded ExpertClean models:
+
+  - **Defer eager SMP until `ESP_GATTC_CFG_MTU_EVT`** — kicking SMP
+    immediately after `SEARCH_CMPL` was too early on HX960V; the brush
+    dropped the SMP request and we'd hit a 6 s supervision-timeout
+    loop. Defering to MTU_EVT (~100 ms later) lands cleanly.
+  - **`ESP_BLE_SEC_ENCRYPT_MITM` instead of `ENCRYPT`** — HX960V's
+    existing bond was MITM-derived; the weaker auth level caused
+    `SMP_UNKNOWN_ERR` reason 0x61. Using ENCRYPT_MITM matches the
+    bond's key derivation and the re-encryption succeeds.
+
+  Live-tested 2026-05-20 across all four brushes (HX9992 Prestige /
+  HX992X Sonicare 9000 / HX6340 Kids / HX960V ExpertClean 7300). All
+  4 reconnect with 0 stale reads (baseline had 4–5 stale reads per
+  reconnect). Stable with 3 brushes connected simultaneously; the 4th
+  is cleanly refused by the v1.5.2 heap backpressure (RAM hardware
+  limit on M5Stack Atom Lite, not a PR #17 issue — see
+  [`docs/ESP32_BRIDGE.md`](../docs/ESP32_BRIDGE.md#multi-device-setup)).
+
+- **`MIN_BRIDGE_VERSION` stays at 1.4.0** — additive code paths, no
+  HA-side schema change.
+
 ## v1.5.2 — 2026-05-22
 
 - **Heap monitoring + pre-connect backpressure** for multi-brush setups.
