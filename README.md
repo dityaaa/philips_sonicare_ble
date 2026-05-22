@@ -1,6 +1,6 @@
 # Philips Sonicare BLE Integration for Home Assistant
 
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/default)
 [![GitHub Release](https://img.shields.io/github/v/release/mtheli/philips_sonicare_ble)](https://github.com/mtheli/philips_sonicare_ble/releases)
 [![License: MIT](https://img.shields.io/github/license/mtheli/philips_sonicare_ble)](LICENSE)
 
@@ -164,18 +164,21 @@ These sensors are only available while actively brushing and stream live data fr
 
 ### HACS (Recommended)
 
+This integration is available in the **default HACS store** — just click the button below, or search HACS for "Philips Sonicare".
+
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=mtheli&repository=philips_sonicare_ble&category=integration)
+
+Then restart Home Assistant.
+
 > Don't have HACS yet? Follow the [HACS installation guide](https://hacs.xyz/docs/use/) first.
 
-1.  Go to **HACS** > **Integrations** in your Home Assistant UI.
-2.  Click the three-dot menu in the top right and select **Custom repositories**.
-3.  Add `https://github.com/mtheli/philips_sonicare_ble` and select the category **Integration**.
-4.  Find the "Philips Sonicare" integration and click **Install**.
-5.  Restart Home Assistant.
-
-### Manual Installation
+<details>
+<summary>Manual installation</summary>
 
 1.  Copy the `custom_components/philips_sonicare_ble` directory from this repository into your Home Assistant `config/custom_components/` folder.
 2.  Restart Home Assistant.
+
+</details>
 
 ---
 
