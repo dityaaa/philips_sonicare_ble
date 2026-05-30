@@ -278,6 +278,19 @@ class SonicareCoordinator {
   // No-op for UUIDs/values we don't display. Called pre-throttle so the OLED
   // updates at the full brush notify rate regardless of notify_throttle_ms_.
   void decode_for_display_(const std::string &uuid, const uint8_t *data, uint16_t len);
+  // True if at least one display-tap sink is configured. Everything below is
+  // gated on this so non-display bridges behave exactly as before.
+  bool display_tap_active_() const {
+    return brushing_time_sensor_ || routine_length_sensor_ || battery_sensor_ ||
+           pressure_sensor_ || handle_state_text_ || brushing_state_text_ ||
+           brushing_mode_text_ || intensity_text_;
+  }
+  // Self-issue reads of the configured display characteristics so the local
+  // OLED populates immediately on connect instead of waiting for HA's poll.
+  // Routed through read_characteristic() → the same queue/auth machinery, so
+  // reads that race SMP retry on AUTH_CMPL. Guarded by display_reads_done_.
+  void queue_display_reads_();
+  bool display_reads_done_{false};
 
   // Helpers
   void resubscribe_all_();

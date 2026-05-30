@@ -124,7 +124,11 @@ void SonicareCoordinator::decode_for_display_(const std::string &uuid,
     return uuid.size() >= n && uuid.compare(uuid.size() - n, n, suffix) == 0;
   };
 
-  if (ends_with("2a19") && this->battery_sensor_) {            // Battery Level (read)
+  // Battery is a standard 16-bit char: its full UUID is
+  // 00002a19-0000-1000-8000-00805f9b34fb, which ENDS in "34fb", not "2a19".
+  // (The custom Sonicare chars do end in their discriminator, e.g. "54090".)
+  // Match the assigned-number segment anywhere instead of the suffix.
+  if (uuid.find("2a19") != std::string::npos && this->battery_sensor_) {  // Battery Level 0x2A19 (read)
     this->battery_sensor_->publish_state(data[0]);
   } else if (ends_with("54090") && len >= 2 && this->brushing_time_sensor_) {
     this->brushing_time_sensor_->publish_state(data[0] | (data[1] << 8));
@@ -146,6 +150,40 @@ void SonicareCoordinator::decode_for_display_(const std::string &uuid,
       this->pressure_sensor_->publish_state(p);
     }
   }
+}
+
+void SonicareCoordinator::queue_display_reads_() {
+  // Self-poll the characteristics backing the local display so the OLED shows
+  // real values the moment the brush is ready — without waiting for HA's
+  // coordinator to issue its read burst (~5 s later). No-op unless a display
+  // sensor is bound, and only once per connection (display_reads_done_).
+  // Each read goes through read_characteristic(), which shares the pending-call
+  // queue + pending_handle_ slot with HA's reads and retries on AUTH_CMPL — so
+  // this can't clobber an in-flight HA read or race the SMP handshake.
+  // The notify subscriptions HA later sets up keep these values live; this is
+  // purely the cold-start fill. decode_for_display_ runs on every read reply.
+  if (!this->display_tap_active_() || this->display_reads_done_)
+    return;
+  this->display_reads_done_ = true;
+
+  static const char *const SVC_BATTERY = "0000180f-0000-1000-8000-00805f9b34fb";
+  static const char *const SVC_SONICARE = "477ea600-a260-11e4-ae37-0002a5d50001";
+  static const char *const SVC_ROUTINE = "477ea600-a260-11e4-ae37-0002a5d50002";
+
+  if (this->battery_sensor_)
+    this->read_characteristic(SVC_BATTERY, "00002a19-0000-1000-8000-00805f9b34fb");
+  if (this->handle_state_text_)
+    this->read_characteristic(SVC_SONICARE, "477ea600-a260-11e4-ae37-0002a5d54010");
+  if (this->brushing_mode_text_)
+    this->read_characteristic(SVC_ROUTINE, "477ea600-a260-11e4-ae37-0002a5d54080");
+  if (this->brushing_state_text_)
+    this->read_characteristic(SVC_ROUTINE, "477ea600-a260-11e4-ae37-0002a5d54082");
+  if (this->brushing_time_sensor_)
+    this->read_characteristic(SVC_ROUTINE, "477ea600-a260-11e4-ae37-0002a5d54090");
+  if (this->routine_length_sensor_)
+    this->read_characteristic(SVC_ROUTINE, "477ea600-a260-11e4-ae37-0002a5d54091");
+  if (this->intensity_text_)
+    this->read_characteristic(SVC_ROUTINE, "477ea600-a260-11e4-ae37-0002a5d540b0");
 }
 
 void SonicareCoordinator::apply_smp_params_() {
@@ -714,6 +752,13 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
         for (auto &fn : pending)
           fn();
       }
+
+      // Local-display cold-start: self-read the display characteristics now so
+      // the OLED shows values immediately instead of waiting ~5 s for HA's
+      // coordinator to poll. No-op unless a display sensor is bound. Reads route
+      // through the same queue as HA's, so on a bonded peer they hit INSUF_AUTH
+      // and get retried on AUTH_CMPL by the existing machinery.
+      this->queue_display_reads_();
       break;
     }
 
