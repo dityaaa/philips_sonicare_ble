@@ -1,0 +1,174 @@
+# Single-ESP Sonicare BLE bridge + SSD1306 OLED + buttons.
+#
+# This is a superset of esphome/atom-lite.yaml: the SAME bridge config
+# (so the HA integration + Toothbrush Card keep working unchanged), PLUS
+# on-device decode of a few GATT values into ESPHome sensors that drive an
+# OLED locally. The OLED works even when HA/WiFi is down because the bytes
+# are decoded on the bridge itself.
+#
+# Requires the FORKED `philips_sonicare` component carrying the decode-tap
+# patch (adds the brushing_time:/battery_level:/... nested keys below).
+# Point external_components at YOUR fork + branch.
+
+substitutions:
+  name: sonicare-oled
+  friendly_name: "Sonicare OLED Bridge"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+# ESP-IDF is required (Bluedroid notification limit is only configurable via
+# sdkconfig). Same rationale as atom-lite.yaml.
+esp32:
+  board: pico32              # ESP32-PICO-KIT (ESP32-PICO-D4)
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_BT_GATTC_MAX_CACHE_CHAR: "80"
+      CONFIG_BT_GATTC_NOTIF_REG_MAX: "20"
+
+logger:
+  level: INFO                # DEBUG is very chatty with BLE notifications
+
+# The bridge registers its HA services via CustomAPIDevice — these two flags
+# are REQUIRED or the integration can't talk to the bridge.
+api:
+  encryption:
+    key: !secret api_encryption_key
+  custom_services: true
+  homeassistant_services: true
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Sonicare-OLED-Fallback"
+    password: !secret fallback_password
+
+captive_portal:
+
+# --- BLE ---
+esp32_ble:
+  io_capability: none
+  max_notifications: 20
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+    interval: 211ms
+    window: 120ms
+
+# --- Point this at your fork containing the decode-tap patch ---------------
+external_components:
+  - source:
+      type: git
+      url: https://github.com/YOURNAME/philips_sonicare_ble   # <-- your fork
+      ref: oled-tap                                            # <-- your branch
+      path: esphome/components
+    components: [philips_sonicare]
+    refresh: 0s
+
+# --- The bridge (Mode B auto-discovery, paired from the HA setup flow) ------
+# The brushing_time:/battery_level:/intensity:/... keys are added by the
+# decode-tap patch. Each is an ordinary ESPHome sensor/text_sensor: it shows
+# up in HA *and* is readable from the display lambda via id().
+philips_sonicare:
+  - id: philips_sonicare_ble
+    notify_throttle_ms: 500          # only throttles HA events; OLED is decoded pre-throttle
+    connected:
+      name: "Brush BLE Connected"
+    # numeric sensors
+    brushing_time:   { name: "Brushing Time",   id: brush_time,   unit_of_measurement: "s" }
+    routine_length:  { name: "Routine Length",  id: brush_target, unit_of_measurement: "s" }
+    battery_level:   { name: "Brush Battery",   id: brush_batt }
+    pressure:        { name: "Brush Pressure",  id: brush_pressure }
+    # text sensors
+    handle_state:    { name: "Handle State",    id: brush_handle }
+    brushing_state:  { name: "Brushing State",  id: brush_state }
+    brushing_mode:   { name: "Brushing Mode",   id: brush_mode }
+    intensity:       { name: "Intensity",       id: brush_intensity }
+    on_connect:
+      then:
+        - logger.log: "Connected to Sonicare"
+    on_disconnect:
+      then:
+        - logger.log: "Disconnected from Sonicare"
+
+# Note: the ESP32-PICO-KIT has no addressable RGB LED (only a fixed power LED),
+# so there is no status_led here. Connection state is shown on the OLED / the
+# "Brush BLE Connected" binary_sensor in HA instead. If you wire an external
+# WS2812, re-add an esp32_rmt_led_strip light: block on a free GPIO.
+
+# --- Display state + buttons ----------------------------------------------
+globals:
+  - id: page
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+binary_sensor:
+  # Onboard BOOT button (GPIO0) cycles display pages. GPIO0 is a strapping pin
+  # with an onboard pull-up; a momentary press at runtime is fine (only holding
+  # it during reset enters download mode). PICO-KIT's GPIO39 is input-only with
+  # no internal pull-up, so don't use it for a button without an external one.
+  - platform: gpio
+    name: "Page Button"
+    pin:
+      number: GPIO0
+      inverted: true
+      mode: { input: true, pullup: true }
+    on_press:
+      - lambda: 'id(page) = (id(page) + 1) % 2;'
+
+i2c:
+  sda: GPIO21     # ESP32 default I2C pins (broken out on PICO-KIT)
+  scl: GPIO22
+  frequency: 400kHz
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 28
+  - file: "gfonts://Roboto"
+    id: font_med
+    size: 16
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 11
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    update_interval: 200ms
+    lambda: |-
+      auto txt = [](text_sensor::TextSensor *s) -> const char* {
+        return s->has_state() ? s->state.c_str() : "—";
+      };
+      if (id(page) == 0) {
+        // Live brushing page
+        it.printf(0, 0, id(font_small), "%s", txt(id(brush_state)));
+        int t = id(brush_time).has_state() ? (int) id(brush_time).state : 0;
+        it.printf(64, 14, id(font_big), TextAlign::TOP_CENTER, "%d:%02d", t / 60, t % 60);
+        // progress bar vs routine length
+        if (id(brush_target).has_state() && id(brush_target).state > 0) {
+          int w = (int) (124.0f * t / id(brush_target).state);
+          if (w > 124) w = 124;
+          it.rectangle(0, 48, 126, 8);
+          it.filled_rectangle(1, 49, w, 6);
+        }
+        it.printf(0, 57, id(font_small), "%s", txt(id(brush_mode)));
+        it.printf(128, 57, id(font_small), TextAlign::BASELINE_RIGHT, "%s", txt(id(brush_intensity)));
+      } else {
+        // Diagnostics page
+        it.printf(0, 0,  id(font_med), "Batt %.0f%%",
+                  id(brush_batt).has_state() ? id(brush_batt).state : 0.0f);
+        it.printf(0, 24, id(font_small), "Handle: %s", txt(id(brush_handle)));
+        it.printf(0, 40, id(font_small), "Pressure: %.0f g",
+                  id(brush_pressure).has_state() ? id(brush_pressure).state : 0.0f);
+      }
