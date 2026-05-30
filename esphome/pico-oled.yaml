@@ -1,4 +1,4 @@
-# Single-ESP Sonicare BLE bridge + SSD1306 OLED + buttons.
+# Single-ESP Sonicare BLE bridge + SH1106 OLED + buttons.
 #
 # This is a superset of esphome/atom-lite.yaml: the SAME bridge config
 # (so the HA integration + Toothbrush Card keep working unchanged), PLUS
@@ -142,8 +142,8 @@ font:
     size: 11
 
 display:
-  - platform: ssd1306_i2c
-    model: "SSD1306 128x64"
+  - platform: sh1106_i2c
+    model: "SH1106 128x64"
     address: 0x3C
     update_interval: 200ms
     lambda: |-
