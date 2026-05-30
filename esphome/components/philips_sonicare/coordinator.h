@@ -2,6 +2,8 @@
 
 #include "esphome/components/esp32_ble_client/ble_client_base.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
+#include "esphome/components/sensor/sensor.h"
+#include "esphome/components/text_sensor/text_sensor.h"
 
 #include <esp_gap_ble_api.h>
 #include <esp_gattc_api.h>
@@ -60,6 +62,21 @@ class SonicareCoordinator {
     this->on_disconnect_cb_ = std::move(cb);
   }
   void set_notify_throttle(uint32_t ms) { this->notify_throttle_ms_ = ms; }
+
+  // ── On-device display decode tap (optional) ────────────────────────────────
+  // Each setter binds a YAML-declared (text_)sensor that decode_for_display_()
+  // publishes to. All nullable: a brush value with no bound sensor is simply
+  // not decoded. Mirrors classic_protocol.py::parse_results on the device so an
+  // attached OLED works without Home Assistant. Does NOT alter the raw _ble_data
+  // event path — HA + the Toothbrush Card are unaffected.
+  void set_brushing_time_sensor(sensor::Sensor *s) { this->brushing_time_sensor_ = s; }
+  void set_routine_length_sensor(sensor::Sensor *s) { this->routine_length_sensor_ = s; }
+  void set_battery_sensor(sensor::Sensor *s) { this->battery_sensor_ = s; }
+  void set_pressure_sensor(sensor::Sensor *s) { this->pressure_sensor_ = s; }
+  void set_handle_state_text(text_sensor::TextSensor *s) { this->handle_state_text_ = s; }
+  void set_brushing_state_text(text_sensor::TextSensor *s) { this->brushing_state_text_ = s; }
+  void set_brushing_mode_text(text_sensor::TextSensor *s) { this->brushing_mode_text_ = s; }
+  void set_intensity_text(text_sensor::TextSensor *s) { this->intensity_text_ = s; }
   // Per-instance log tag, set in to_code(): "philips_sonicare" (single-bridge)
   // or "philips_sonicare.<bridge_id>" (multi-bridge). Used by all ESP_LOG calls
   // in this class so each bridge's lines are distinguishable in the log stream
@@ -247,6 +264,20 @@ class SonicareCoordinator {
   uint32_t backoff_until_ms_{0};
   static const uint8_t MAX_AUTH_FAILURES = 3;
   static const uint32_t AUTH_BACKOFF_MS = 60000;  // 60 seconds
+
+  // Optional display-tap sinks (any may be null).
+  sensor::Sensor *brushing_time_sensor_{nullptr};
+  sensor::Sensor *routine_length_sensor_{nullptr};
+  sensor::Sensor *battery_sensor_{nullptr};
+  sensor::Sensor *pressure_sensor_{nullptr};
+  text_sensor::TextSensor *handle_state_text_{nullptr};
+  text_sensor::TextSensor *brushing_state_text_{nullptr};
+  text_sensor::TextSensor *brushing_mode_text_{nullptr};
+  text_sensor::TextSensor *intensity_text_{nullptr};
+  // Decode one raw GATT payload (Classic protocol) into the bound sensors.
+  // No-op for UUIDs/values we don't display. Called pre-throttle so the OLED
+  // updates at the full brush notify rate regardless of notify_throttle_ms_.
+  void decode_for_display_(const std::string &uuid, const uint8_t *data, uint16_t len);
 
   // Helpers
   void resubscribe_all_();

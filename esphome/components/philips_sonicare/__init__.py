@@ -3,7 +3,13 @@ import zlib
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
-from esphome.components import binary_sensor, ble_client, esp32_ble_tracker
+from esphome.components import (
+    binary_sensor,
+    ble_client,
+    esp32_ble_tracker,
+    sensor,
+    text_sensor,
+)
 from esphome.const import (
     CONF_ID,
     CONF_MAC_ADDRESS,
@@ -15,7 +21,7 @@ from esphome.core import ID as CoreID
 CONF_AUTO_CONNECT = "auto_connect"
 
 DEPENDENCIES = ["esp32_ble_tracker", "api"]
-AUTO_LOAD = ["binary_sensor", "esp32_ble_client"]
+AUTO_LOAD = ["binary_sensor", "sensor", "text_sensor", "esp32_ble_client"]
 MULTI_CONF = True
 
 CONF_BLE_CLIENT_ID = "ble_client_id"
@@ -23,6 +29,15 @@ CONF_BRIDGE_GENERATED_ID = "bridge_generated_id"
 CONF_COORD_GENERATED_ID = "coord_generated_id"
 CONF_CONNECTED_SENSOR = "connected"
 CONF_NOTIFY_THROTTLE = "notify_throttle_ms"
+# Optional on-device decode-tap outputs (drive a local display without HA).
+CONF_BRUSHING_TIME = "brushing_time"
+CONF_ROUTINE_LENGTH = "routine_length"
+CONF_BATTERY_LEVEL = "battery_level"
+CONF_PRESSURE = "pressure"
+CONF_HANDLE_STATE = "handle_state"
+CONF_BRUSHING_STATE = "brushing_state"
+CONF_BRUSHING_MODE = "brushing_mode"
+CONF_INTENSITY = "intensity"
 CONF_BRIDGE_ID = "bridge_id"
 CONF_FRIENDLY_NAME = "friendly_name"
 CONF_AREA = "area"
@@ -61,6 +76,24 @@ _BASE_SCHEMA = cv.Schema(
         cv.Optional(CONF_CONNECTED_SENSOR): binary_sensor.binary_sensor_schema(
             device_class="connectivity",
         ),
+        # On-device decode tap — all optional. Each present key publishes the
+        # decoded Classic-protocol value locally (and to HA as a normal entity).
+        cv.Optional(CONF_BRUSHING_TIME): sensor.sensor_schema(
+            unit_of_measurement="s", accuracy_decimals=0, icon="mdi:timer-outline",
+        ),
+        cv.Optional(CONF_ROUTINE_LENGTH): sensor.sensor_schema(
+            unit_of_measurement="s", accuracy_decimals=0,
+        ),
+        cv.Optional(CONF_BATTERY_LEVEL): sensor.sensor_schema(
+            unit_of_measurement="%", accuracy_decimals=0, device_class="battery",
+        ),
+        cv.Optional(CONF_PRESSURE): sensor.sensor_schema(
+            unit_of_measurement="g", accuracy_decimals=0,
+        ),
+        cv.Optional(CONF_HANDLE_STATE): text_sensor.text_sensor_schema(),
+        cv.Optional(CONF_BRUSHING_STATE): text_sensor.text_sensor_schema(),
+        cv.Optional(CONF_BRUSHING_MODE): text_sensor.text_sensor_schema(),
+        cv.Optional(CONF_INTENSITY): text_sensor.text_sensor_schema(),
         # Triggers fire on the Coordinator's ready/disconnect callbacks, so they
         # work in both modes. Mode A's external `ble_client.on_connect` fires on
         # raw GAP-connect (before service discovery), which is too early for
@@ -157,6 +190,24 @@ async def to_code(config):
     if CONF_CONNECTED_SENSOR in config:
         sens = await binary_sensor.new_binary_sensor(config[CONF_CONNECTED_SENSOR])
         cg.add(bridge_var.set_connected_sensor(sens))
+
+    # Decode-tap sinks → SonicareCoordinator (it owns the byte decode).
+    for key, setter in (
+        (CONF_BRUSHING_TIME, coord_var.set_brushing_time_sensor),
+        (CONF_ROUTINE_LENGTH, coord_var.set_routine_length_sensor),
+        (CONF_BATTERY_LEVEL, coord_var.set_battery_sensor),
+        (CONF_PRESSURE, coord_var.set_pressure_sensor),
+    ):
+        if key in config:
+            cg.add(setter(await sensor.new_sensor(config[key])))
+    for key, setter in (
+        (CONF_HANDLE_STATE, coord_var.set_handle_state_text),
+        (CONF_BRUSHING_STATE, coord_var.set_brushing_state_text),
+        (CONF_BRUSHING_MODE, coord_var.set_brushing_mode_text),
+        (CONF_INTENSITY, coord_var.set_intensity_text),
+    ):
+        if key in config:
+            cg.add(setter(await text_sensor.new_text_sensor(config[key])))
 
     if CONF_BLE_CLIENT_ID in config:
         # ESPHome's ble_client component does not emit USE_BLE_CLIENT itself,

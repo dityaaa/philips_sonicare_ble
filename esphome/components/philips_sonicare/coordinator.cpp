@@ -86,6 +86,68 @@ void SonicareCoordinator::emit_data_(const std::string &uuid,
   this->emit_(EVENT_DATA, data);
 }
 
+// Classic-protocol enum tables — kept in sync with const.py. Index = raw byte.
+static const char *handle_state_str(uint8_t v) {
+  switch (v) {
+    case 0: return "off";       case 1: return "standby";  case 2: return "run";
+    case 3: return "charge";    case 4: return "shutdown"; case 6: return "validate";
+    case 7: return "background"; default: return "unknown";
+  }
+}
+static const char *brushing_state_str(uint8_t v) {
+  switch (v) {
+    case 0: return "off"; case 1: return "on"; case 2: return "pause";
+    case 3: return "session_complete"; case 4: return "session_aborted";
+    default: return "unknown";
+  }
+}
+static const char *brushing_mode_str(uint16_t v) {
+  switch (v) {
+    case 0: return "clean";          case 1: return "white_plus"; case 2: return "gum_health";
+    case 3: return "tongue_care";    case 4: return "deep_clean_plus"; case 5: return "sensitive";
+    default: return "unknown";
+  }
+}
+static const char *intensity_str(uint8_t v) {
+  switch (v) { case 0: return "low"; case 1: return "medium"; case 2: return "high"; default: return "unknown"; }
+}
+
+void SonicareCoordinator::decode_for_display_(const std::string &uuid,
+                                              const uint8_t *data, uint16_t len) {
+  if (data == nullptr || len == 0)
+    return;
+  // Compare on the 4-hex characteristic discriminator (chars 32..36 of the
+  // 128-bit Sonicare UUID "477ea600-…-0002a5d5XXXX") plus the BLE Battery
+  // short/long forms. Cheap and avoids full-string compares per notification.
+  auto ends_with = [&](const char *suffix) {
+    size_t n = strlen(suffix);
+    return uuid.size() >= n && uuid.compare(uuid.size() - n, n, suffix) == 0;
+  };
+
+  if (ends_with("2a19") && this->battery_sensor_) {            // Battery Level (read)
+    this->battery_sensor_->publish_state(data[0]);
+  } else if (ends_with("54090") && len >= 2 && this->brushing_time_sensor_) {
+    this->brushing_time_sensor_->publish_state(data[0] | (data[1] << 8));
+  } else if (ends_with("54091") && len >= 2 && this->routine_length_sensor_) {
+    this->routine_length_sensor_->publish_state(data[0] | (data[1] << 8));
+  } else if (ends_with("54010") && this->handle_state_text_) {
+    this->handle_state_text_->publish_state(handle_state_str(data[0]));
+  } else if (ends_with("54082") && this->brushing_state_text_) {
+    this->brushing_state_text_->publish_state(brushing_state_str(data[0]));
+  } else if (ends_with("54080") && this->brushing_mode_text_) {
+    uint16_t m = (len >= 2) ? (data[0] | (data[1] << 8)) : data[0];
+    this->brushing_mode_text_->publish_state(brushing_mode_str(m));
+  } else if (ends_with("540b0") && this->intensity_text_) {
+    this->intensity_text_->publish_state(intensity_str(data[0]));
+  } else if (ends_with("54130") && len >= 4) {                 // Sensor stream frame
+    uint16_t frame_type = data[0] | (data[1] << 8);
+    if (frame_type == 1 /*pressure*/ && len >= 7 && this->pressure_sensor_) {
+      int16_t p = (int16_t) (data[4] | (data[5] << 8));
+      this->pressure_sensor_->publish_state(p);
+    }
+  }
+}
+
 void SonicareCoordinator::apply_smp_params_() {
   // LE Secure Connections pairing parameters.
   // Models that don't need bonding (e.g. DiamondClean) will simply
@@ -816,6 +878,10 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
                  this->pending_char_uuid_.c_str(),
                  hex_payload.c_str(), param->read.value_len);
 
+        // Display tap: decode read replies too (battery is read, not notified).
+        this->decode_for_display_(this->pending_char_uuid_,
+                                  param->read.value, param->read.value_len);
+
         this->emit_data_(this->pending_char_uuid_, hex_payload);
 
         this->pending_handle_ = 0;
@@ -874,6 +940,11 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
       auto it = this->notify_map_.find(param->notify.handle);
       if (it == this->notify_map_.end())
         break;
+
+      // Display tap runs BEFORE the throttle gate so the OLED updates at the
+      // brush's full notify rate even when HA events are rate-limited.
+      this->decode_for_display_(it->second, param->notify.value,
+                                param->notify.value_len);
 
       // Throttle bypass for Condor (e50b…) chars. The framed V4 protocol
       // is fundamentally incompatible with per-handle rate-limiting:
