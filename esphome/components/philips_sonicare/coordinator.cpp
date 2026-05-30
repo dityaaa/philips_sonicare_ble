@@ -616,6 +616,7 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
       this->retry_read_after_auth_ = false;
       this->encryption_requested_ = false;
       this->pending_eager_smp_ = false;
+      this->display_reads_done_ = false;  // re-run the display cold-start next connect
       this->name_handle_ = 0;
       this->notify_map_.clear();
       this->cccd_map_.clear();
