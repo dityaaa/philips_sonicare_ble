@@ -149,6 +149,15 @@ class SonicareCoordinator {
   void write_characteristic(const std::string &service_uuid,
                              const std::string &char_uuid,
                              const std::string &hex_data);
+  // ── On-device controls (for physical buttons on the bridge) ────────────────
+  // Cycle the brushing mode / intensity to the next value and write it to the
+  // brush. They step from the cached cur_mode_/cur_intensity_ (kept current by
+  // the decode tap), write the selected-routine (0x4022) / intensity (0x40b0)
+  // char, and optimistically publish the new value to the display sensor so the
+  // OLED updates immediately. No-op if not connected. `modes`/`levels` bound the
+  // cycle range (e.g. 6 modes, 3 intensities).
+  void cycle_brushing_mode(uint8_t modes = 6);
+  void cycle_intensity(uint8_t levels = 3);
   void list_services();  // enumerate GATT services + characteristics → HA event
   std::map<std::string, std::string> collect_info_data();
 
@@ -291,6 +300,14 @@ class SonicareCoordinator {
   // reads that race SMP retry on AUTH_CMPL. Guarded by display_reads_done_.
   void queue_display_reads_();
   bool display_reads_done_{false};
+  // Last-decoded mode/intensity ordinals, cached so the on-device control
+  // buttons (set_next_mode/set_next_intensity) can step relative to the
+  // current value. mode_from_4022_ records that the selected-routine char
+  // (0x4022) drove the mode, so the read-only session char (0x4080) doesn't
+  // overwrite it — mirrors classic_protocol.py's 0x4022-wins precedence.
+  uint8_t cur_mode_{0};
+  uint8_t cur_intensity_{0};
+  bool mode_from_4022_{false};
 
   // Helpers
   void resubscribe_all_();

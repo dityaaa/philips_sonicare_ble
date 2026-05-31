@@ -44,6 +44,15 @@ class PhilipsSonicare : public ble_client::BLEClientNode, public Component {
   // Per-instance log tag, set in to_code() — see SonicareBridge::set_log_tag.
   void set_log_tag(const std::string &tag) { this->log_tag_ = tag; }
 
+  // On-device control shims for button lambdas:
+  //   on_press: - lambda: 'id(my_brush).cycle_intensity();'
+  void cycle_brushing_mode(uint8_t modes = 6) {
+    if (this->coord_) this->coord_->cycle_brushing_mode(modes);
+  }
+  void cycle_intensity(uint8_t levels = 3) {
+    if (this->coord_) this->coord_->cycle_intensity(levels);
+  }
+
  protected:
   SonicareCoordinator *coord_{nullptr};
   std::string log_tag_;  // fallback to file-scope TAG until set
@@ -70,6 +79,15 @@ class PhilipsSonicareStandalone : public esp32_ble_client::BLEClientBase {
   void set_enabled(bool enabled);
   // Per-instance log tag, set in to_code() — see SonicareBridge::set_log_tag.
   void set_log_tag(const std::string &tag) { this->log_tag_ = tag; }
+
+  // On-device control shims for button lambdas:
+  //   on_press: - lambda: 'id(my_brush).cycle_intensity();'
+  void cycle_brushing_mode(uint8_t modes = 6) {
+    if (this->coord_) this->coord_->cycle_brushing_mode(modes);
+  }
+  void cycle_intensity(uint8_t levels = 3) {
+    if (this->coord_) this->coord_->cycle_intensity(levels);
+  }
 
  protected:
   SonicareCoordinator *coord_{nullptr};

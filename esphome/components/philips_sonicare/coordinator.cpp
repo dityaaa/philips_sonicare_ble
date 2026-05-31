@@ -138,10 +138,21 @@ void SonicareCoordinator::decode_for_display_(const std::string &uuid,
     this->handle_state_text_->publish_state(handle_state_str(data[0]));
   } else if (ends_with("54082") && this->brushing_state_text_) {
     this->brushing_state_text_->publish_state(brushing_state_str(data[0]));
-  } else if (ends_with("54080") && this->brushing_mode_text_) {
+  } else if (ends_with("54022") && this->brushing_mode_text_) {
+    // 0x4022 = selected routine id. On write-capable models (Prestige HX999X,
+    // HX74xx) this is the mode the user picked and the one that changes when HA
+    // writes a new mode — it WINS over 0x4080 (read-only session status, which
+    // stays put until a session runs). Mirrors classic_protocol.py.
+    this->cur_mode_ = data[0];
+    this->mode_from_4022_ = true;
+    this->brushing_mode_text_->publish_state(brushing_mode_str(data[0]));
+  } else if (ends_with("54080") && this->brushing_mode_text_ && !this->mode_from_4022_) {
+    // Fallback only for models without a 0x4022 selected-routine char.
     uint16_t m = (len >= 2) ? (data[0] | (data[1] << 8)) : data[0];
+    this->cur_mode_ = (uint8_t) m;
     this->brushing_mode_text_->publish_state(brushing_mode_str(m));
   } else if (ends_with("540b0") && this->intensity_text_) {
+    this->cur_intensity_ = data[0];
     this->intensity_text_->publish_state(intensity_str(data[0]));
   } else if (ends_with("54130") && len >= 4) {                 // Sensor stream frame
     uint16_t frame_type = data[0] | (data[1] << 8);
@@ -174,8 +185,13 @@ void SonicareCoordinator::queue_display_reads_() {
     this->read_characteristic(SVC_BATTERY, "00002a19-0000-1000-8000-00805f9b34fb");
   if (this->handle_state_text_)
     this->read_characteristic(SVC_SONICARE, "477ea600-a260-11e4-ae37-0002a5d54010");
-  if (this->brushing_mode_text_)
+  if (this->brushing_mode_text_) {
+    // 0x4022 (selected routine) first — it wins for write-capable models and is
+    // the value that tracks HA mode changes. 0x4080 is the read-only fallback
+    // for models that lack 0x4022 (skipped once 0x4022 sets mode_from_4022_).
+    this->read_characteristic(SVC_SONICARE, "477ea600-a260-11e4-ae37-0002a5d54022");
     this->read_characteristic(SVC_ROUTINE, "477ea600-a260-11e4-ae37-0002a5d54080");
+  }
   if (this->brushing_state_text_)
     this->read_characteristic(SVC_ROUTINE, "477ea600-a260-11e4-ae37-0002a5d54082");
   if (this->brushing_time_sensor_)
@@ -617,6 +633,7 @@ void SonicareCoordinator::on_gattc_event(esp_gattc_cb_event_t event,
       this->encryption_requested_ = false;
       this->pending_eager_smp_ = false;
       this->display_reads_done_ = false;  // re-run the display cold-start next connect
+      this->mode_from_4022_ = false;      // re-establish 0x4022-wins next connect
       this->name_handle_ = 0;
       this->notify_map_.clear();
       this->cccd_map_.clear();
@@ -1401,6 +1418,30 @@ void SonicareCoordinator::write_characteristic(const std::string &service_uuid,
     return;
   }
 
+  // Display sync for control writes. 0x4022 (selected routine / mode) and
+  // 0x40b0 (intensity) are written by BOTH the on-device buttons and Home
+  // Assistant's mode/intensity controls, but 0x4022 is NOT in the notify set —
+  // so without this hook an HA mode change wouldn't reach the local OLED until
+  // the next poll. Mirror the written value into the cache + display sensor
+  // immediately. Suffix-match on the char UUID (see decode_for_display_).
+  if (!bytes.empty()) {
+    auto ends_with = [&](const char *suffix) {
+      size_t n = strlen(suffix);
+      return char_uuid.size() >= n &&
+             char_uuid.compare(char_uuid.size() - n, n, suffix) == 0;
+    };
+    if (ends_with("54022")) {
+      this->cur_mode_ = bytes[0];
+      this->mode_from_4022_ = true;
+      if (this->brushing_mode_text_)
+        this->brushing_mode_text_->publish_state(brushing_mode_str(bytes[0]));
+    } else if (ends_with("540b0")) {
+      this->cur_intensity_ = bytes[0];
+      if (this->intensity_text_)
+        this->intensity_text_->publish_state(intensity_str(bytes[0]));
+    }
+  }
+
   // Pick the write method that matches the characteristic's declared
   // properties. Default is WRITE_TYPE_RSP (legacy Sonicare chars all have
   // the WRITE bit set), but Condor's e50b0007 (Client Config) is
@@ -1442,6 +1483,49 @@ void SonicareCoordinator::write_characteristic(const std::string &service_uuid,
   if (status != ESP_OK) {
     ESP_LOGW(this->log_tag_.c_str(), "Write request failed: %d", status);
   }
+}
+
+// ── On-device controls ───────────────────────────────────────────────────────
+// Helper: 1-byte hex string for write_characteristic (e.g. 3 → "03").
+static std::string byte_hex(uint8_t v) {
+  char buf[3];
+  snprintf(buf, sizeof(buf), "%02x", v);
+  return std::string(buf);
+}
+
+void SonicareCoordinator::cycle_brushing_mode(uint8_t modes) {
+  if (!this->connected_ || modes == 0)
+    return;
+  uint8_t next = (uint8_t) ((this->cur_mode_ + 1) % modes);
+  // Write the *selected routine id* (0x4022) — the write-capable mode char.
+  // Only Prestige (HX999X) / HX74xx accept this; on other models the write is
+  // refused by the brush (logged) and the optimistic UI update below is undone
+  // on the next 0x4080 read. Mirrors classic_protocol.py::set_brushing_mode.
+  this->write_characteristic("477ea600-a260-11e4-ae37-0002a5d50001",
+                             "477ea600-a260-11e4-ae37-0002a5d54022",
+                             byte_hex(next));
+  // Optimistic: update cache + display immediately so the button feels instant.
+  this->cur_mode_ = next;
+  this->mode_from_4022_ = true;
+  if (this->brushing_mode_text_)
+    this->brushing_mode_text_->publish_state(brushing_mode_str(next));
+  ESP_LOGI(this->log_tag_.c_str(), "Button: brushing mode -> %s (%u)",
+           brushing_mode_str(next), next);
+}
+
+void SonicareCoordinator::cycle_intensity(uint8_t levels) {
+  if (!this->connected_ || levels == 0)
+    return;
+  uint8_t next = (uint8_t) ((this->cur_intensity_ + 1) % levels);
+  // Intensity char (0x40b0) on the Routine service.
+  this->write_characteristic("477ea600-a260-11e4-ae37-0002a5d50002",
+                             "477ea600-a260-11e4-ae37-0002a5d540b0",
+                             byte_hex(next));
+  this->cur_intensity_ = next;
+  if (this->intensity_text_)
+    this->intensity_text_->publish_state(intensity_str(next));
+  ESP_LOGI(this->log_tag_.c_str(), "Button: intensity -> %s (%u)",
+           intensity_str(next), next);
 }
 
 void SonicareCoordinator::list_services() {
