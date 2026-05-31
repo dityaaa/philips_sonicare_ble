@@ -188,8 +188,8 @@ display:
   - platform: ssd1306_spi
     model: "SSD1306 128x64"
     cs_pin: GPIO5      # SPI chip select (CS)
-    dc_pin: GPIO16     # data/command (DC)
-    reset_pin: GPIO17  # display reset (RES) — omit if your module has none
+    dc_pin: GPIO19     # data/command (DC)
+    reset_pin: GPIO21  # display reset (RES) — omit if your module has none
     update_interval: 200ms
     lambda: |-
       // ── label maps (raw sensor keys → display text) ──────────────────────
