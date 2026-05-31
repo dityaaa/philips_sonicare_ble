@@ -1,4 +1,4 @@
-# Single-ESP Sonicare BLE bridge + SH1106 OLED (ESP32-PICO-KIT).
+# Single-ESP Sonicare BLE bridge + SSD1306 SPI OLED (ESP32-PICO-KIT).
 #
 # Superset of esphome/atom-lite.yaml: the SAME bridge config (so the HA
 # integration + Toothbrush Card keep working unchanged), PLUS on-device decode
@@ -148,13 +148,15 @@ binary_sensor:
     on_press:
       - lambda: 'id(philips_sonicare_ble).cycle_intensity(3);'
 
-i2c:
-  sda: GPIO21     # ESP32 default I2C pins (broken out on PICO-KIT)
-  scl: GPIO22
-  frequency: 400kHz
+# 4-wire SPI bus for the SSD1306 OLED. clk = SPI SCLK, mosi = SPI MOSI (the
+# display's DIN/D1). MISO is unused by the display (write-only) and omitted.
+# GPIO18/23 are the ESP32 default VSPI pins, broken out on the PICO-KIT.
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
 
 # Roboto Mono — the approved family (gfonts://Roboto Mono). bpp:1 = 1-bit,
-# matching the mono SH1106. Sizes/weights mirror the design tool.
+# matching the mono SSD1306. Sizes/weights mirror the design tool.
 font:
   - file: "gfonts://Roboto Mono"
     id: font_sm
@@ -183,9 +185,11 @@ font:
     bpp: 1
 
 display:
-  - platform: sh1106_i2c
-    model: "SH1106 128x64"
-    address: 0x3C
+  - platform: ssd1306_spi
+    model: "SSD1306 128x64"
+    cs_pin: GPIO5      # SPI chip select (CS)
+    dc_pin: GPIO16     # data/command (DC)
+    reset_pin: GPIO17  # display reset (RES) — omit if your module has none
     update_interval: 200ms
     lambda: |-
       // ── label maps (raw sensor keys → display text) ──────────────────────
