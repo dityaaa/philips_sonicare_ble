@@ -2,7 +2,7 @@
 #
 # Superset of esphome/atom-lite.yaml: the SAME bridge config (so the HA
 # integration + Toothbrush Card keep working unchanged), PLUS on-device decode
-# of GATT values into ESPHome sensors that drive a local SH1106 OLED. The OLED
+# of GATT values into ESPHome sensors that drive a local SSD1306 OLED. The OLED
 # works even when HA/WiFi is down because the bytes are decoded on the bridge.
 #
 # Requires the FORKED philips_sonicare component with the decode-tap patch
