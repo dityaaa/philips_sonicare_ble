@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sonicare OLED Design — 128×64 SH1106 simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Real pixel fonts (u8g2 aesthetic) with lowercase, rendered then
+     thresholded 1-bit. Each family is available to the firmware as
+     gfonts://<Family>, so the preview maps 1:1. For an exact bitmap match you
+     can also use a u8g2 .bdf via ESPHome's font: file: — see the panel hint. -->
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;700&family=Handjet:wght@400;700&family=Silkscreen:wght@400;700&family=Roboto+Mono:wght@400;500;700&family=Space+Mono:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#16181d; --panel:#1f232b; --ink:#e7ecf3; --muted:#8b95a5; --accent:#42a5f5; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 20px; border-bottom:1px solid #2b2f38; }
+  header h1 { margin:0; font-size:16px; font-weight:650; }
+  header p  { margin:4px 0 0; color:var(--muted); font-size:12px; }
+  .wrap { display:flex; gap:24px; padding:20px; flex-wrap:wrap; align-items:flex-start; }
+  .stage { flex:0 0 auto; }
+  .screen-frame {
+    background:#0a0c10; padding:18px; border-radius:14px;
+    box-shadow: inset 0 0 0 1px #2b313c, 0 8px 30px rgba(0,0,0,.5);
+    /* Fixed footprint sized for the max scale (128×8 + 2×18 padding) so
+       resizing the canvas never reflows the layout — that reflow was yanking
+       the scale slider out from under the cursor and jumping it to max. */
+    width: 1060px; height: 548px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  canvas#oled { display:block; image-rendering:pixelated; border-radius:4px; }
+  .stage-meta { color:var(--muted); font-size:12px; margin-top:10px; text-align:center; }
+  .pager { display:flex; gap:8px; justify-content:center; margin-top:12px; }
+  button {
+    background:var(--panel); color:var(--ink); border:1px solid #333a45; border-radius:8px;
+    padding:7px 12px; cursor:pointer; font-size:13px;
+  }
+  button:hover { border-color:var(--accent); }
+  button.active { background:var(--accent); color:#06121f; border-color:var(--accent); font-weight:600; }
+  .controls { flex:1 1 320px; min-width:300px; background:var(--panel); border:1px solid #2b313c; border-radius:12px; padding:16px; }
+  .controls h2 { margin:0 0 12px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .row { display:grid; grid-template-columns:120px 1fr; gap:10px; align-items:center; margin-bottom:10px; }
+  .row label { color:var(--muted); font-size:12px; }
+  select, input[type=range], input[type=number], input[type=text] {
+    width:100%; background:#15181e; color:var(--ink); border:1px solid #333a45; border-radius:6px; padding:5px 7px; font:inherit;
+  }
+  input[type=text]#r_json { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; }
+  input[type=range] { padding:0; }
+  .val { color:var(--accent); font-variant-numeric:tabular-nums; font-size:12px; }
+  .scenarios { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+  .scenarios button { padding:5px 9px; font-size:12px; }
+  .hint { color:var(--muted); font-size:11px; margin-top:14px; border-top:1px solid #2b313c; padding-top:10px; }
+  .hint code { color:#cdd6e2; }
+  .toggles { display:flex; gap:14px; margin-top:8px; color:var(--muted); font-size:12px; }
+  .toggles label { display:flex; gap:5px; align-items:center; cursor:pointer; }
+  .reset { float:right; font-size:11px; padding:3px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sonicare OLED Design</h1>
+  <p>128×64 SH1106 (1-bit) simulator · draw API mirrors ESPHome <code>it.*</code> so an approved design maps straight into the display lambda.</p>
+</header>
+
+<div class="wrap">
+  <div class="stage">
+    <div class="screen-frame">
+      <canvas id="oled" width="768" height="384"></canvas>
+    </div>
+    <div class="pager" id="pager"></div>
+    <div class="stage-meta" id="pageName">—</div>
+    <div class="stage-meta" id="fontInfo" style="color:var(--accent)">—</div>
+  </div>
+
+  <div class="controls">
+    <h2>Scenarios</h2>
+    <div class="scenarios" id="scenarios"></div>
+
+    <h2>State</h2>
+    <div class="row"><label>Connected</label>
+      <select id="connected"><option value="1">yes</option><option value="0">no</option></select></div>
+    <div class="row"><label>Handle state</label>
+      <select id="handle">
+        <option>off</option><option>standby</option><option>run</option>
+        <option>charge</option><option>background</option>
+      </select></div>
+    <div class="row"><label>Brushing state</label>
+      <select id="bstate">
+        <option>off</option><option>on</option><option>pause</option>
+        <option>session_complete</option><option>session_aborted</option>
+      </select></div>
+    <div class="row"><label>Mode</label>
+      <select id="mode">
+        <option>clean</option><option>white_plus</option><option>gum_health</option>
+        <option>deep_clean_plus</option><option>sensitive</option><option>tongue_care</option>
+      </select></div>
+    <div class="row"><label>Intensity</label>
+      <select id="intensity"><option>low</option><option>medium</option><option>high</option></select></div>
+    <div class="row"><label>Brushing time</label>
+      <input type="range" id="time" min="0" max="180" value="48"><span class="val" id="timeVal"></span></div>
+    <div class="row"><label>Routine length</label>
+      <input type="number" id="target" value="120" min="30" max="300"></div>
+    <div class="row"><label>Battery %</label>
+      <input type="range" id="batt" min="0" max="100" value="62"><span class="val" id="battVal"></span></div>
+    <div class="row"><label>Pressure (g)</label>
+      <input type="range" id="press" min="0" max="350" value="0"><span class="val" id="pressVal"></span></div>
+
+    <div class="hint">
+      The brush only streams <code>pressure</code> during an active session, and
+      <code>battery</code> updates on connect (not live). Sector/zone isn't decoded on-device.
+      Design within those limits and the lambda translation is 1:1.
+    </div>
+  </div>
+
+  <div class="controls">
+    <h2>Rendering <button class="reset" id="resetRender">reset</button></h2>
+    <div class="row"><label>Font</label>
+      <select id="r_font">
+        <option value="pixelify">Pixelify Sans (pixel)</option>
+        <option value="handjet">Handjet (pixel)</option>
+        <option value="silkscreen">Silkscreen (pixel, caps)</option>
+        <option value="roboto_mono">Roboto Mono</option>
+        <option value="space_mono">Space Mono</option>
+        <option value="jetbrains">JetBrains Mono</option>
+        <option value="system_mono">System / browser monospace</option>
+        <option value="custom">Custom (type below)…</option>
+      </select></div>
+    <div class="row"><label>Custom font</label>
+      <input type="text" id="r_custom" spellcheck="false" placeholder="any Google Font, e.g. VT323, Inconsolata, Press Start 2P"></div>
+    <div class="row"><label>Luminance cutoff</label>
+      <input type="range" id="r_lum" min="1" max="254" value="128"><span class="val" id="r_lumVal"></span></div>
+    <div class="row"><label>Scale (px)</label>
+      <input type="range" id="r_scale" min="3" max="8" value="6"><span class="val" id="r_scaleVal"></span></div>
+    <div class="row"><label>Pixel gap</label>
+      <input type="range" id="r_gap" min="0" max="2" value="1"><span class="val" id="r_gapVal"></span></div>
+    <div class="row"><label>Pixel shape</label>
+      <select id="r_shape"><option value="square">square</option><option value="round">round (dot-matrix)</option></select></div>
+    <div class="row"><label>Color theme</label>
+      <select id="r_theme"><option value="blue">blue</option><option value="amber">amber</option><option value="white">white</option><option value="green">green</option></select></div>
+    <div class="row"><label>On brightness</label>
+      <input type="range" id="r_on" min="40" max="100" value="100"><span class="val" id="r_onVal"></span></div>
+    <div class="row"><label>Off glow</label>
+      <input type="range" id="r_off" min="0" max="30" value="6"><span class="val" id="r_offVal"></span></div>
+
+    <div class="row"><label>Settings</label>
+      <input type="text" id="r_json" spellcheck="false"></div>
+    <div style="display:flex; gap:8px; margin:0 0 6px;">
+      <button id="copyRender">Copy settings</button>
+      <button id="applyRender">Apply pasted</button>
+    </div>
+
+    <div class="hint">
+      <strong>Font</strong> — pick a preset, or type ANY Google Font name in
+      <strong>Custom</strong> and it's fetched live for preview. The same name
+      maps to <code>gfonts://&lt;name&gt;</code> on-device, so whatever previews
+      here is reproducible in the firmware. The readout below names the family
+      actually rendering (and warns if a name didn't load).<br>
+      <strong>Luminance cutoff</strong> turns a pixel ON at ~50% coverage
+      (≈<code>128</code>) — adjust to match what your panel shows.
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────
+// 1-bit display core. Draw to a 128×64 offscreen canvas with a tiny API that
+// mirrors ESPHome's display methods, then threshold to mono and upscale
+// nearest-neighbour onto the visible canvas.
+// ─────────────────────────────────────────────────────────────────────────
+const W = 128, H = 64;
+const view = document.getElementById('oled');
+const vctx = view.getContext('2d');
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+
+// Pixel-font family → CSS stack. Key maps to the gfonts:// family used
+// on-device. All have lowercase (unlike a classic LCD pixel font).
+const FONT_STACK = {
+  pixelify:   '"Pixelify Sans", monospace',
+  handjet:    '"Handjet", monospace',
+  silkscreen: '"Silkscreen", monospace',
+  roboto_mono:  '"Roboto Mono", monospace',
+  space_mono:   '"Space Mono", monospace',
+  jetbrains:    '"JetBrains Mono", monospace',
+  system_mono:  'monospace',           // the OS default mono (Consolas on Win)
+};
+// gfonts:// family name per key — shown in the panel hint for the YAML port.
+// system_mono has no gfonts equivalent (it's the OS font) — flagged null.
+const FONT_GFONTS = {
+  pixelify: 'Pixelify Sans', handjet: 'Handjet', silkscreen: 'Silkscreen',
+  roboto_mono: 'Roboto Mono', space_mono: 'Space Mono', jetbrains: 'JetBrains Mono',
+  system_mono: null,
+};
+// Native pixel grid per font — pixel fonts snap to it so glyphs land on whole
+// pixels. Smooth (mono) fonts use 1 (no snap); they're not bitmap fonts.
+const FONT_GRID = {
+  pixelify: 4, handjet: 4, silkscreen: 8,
+  roboto_mono: 1, space_mono: 1, jetbrains: 1, system_mono: 1,
+};
+
+// Configurable render parameters (driven by the Rendering panel).
+const RENDER_DEFAULTS = {
+  lum: 128, scale: 6, gap: 1, shape: 'square', theme: 'blue', on: 100, off: 6,
+  font: 'pixelify', custom: '',
+};
+
+// Resolve the active CSS font-family string. When font==='custom', use the
+// free-text family the user typed (so they can identify a browser-substituted
+// font by name); otherwise use the named stack.
+function activeFontCss() {
+  if (render_opts.font === 'custom' && render_opts.custom.trim())
+    return `"${render_opts.custom.trim()}", monospace`;
+  return FONT_STACK[render_opts.font] || FONT_STACK.pixelify;
+}
+const render_opts = { ...RENDER_DEFAULTS };
+
+// Persist the render knobs across reloads + expose them as copy/paste JSON.
+const RENDER_LS_KEY = 'sonicare_oled_render';
+try {
+  const saved = JSON.parse(localStorage.getItem(RENDER_LS_KEY) || 'null');
+  if (saved && typeof saved === 'object') Object.assign(render_opts, saved);
+} catch (e) { /* ignore corrupt storage */ }
+function persistRender() {
+  try { localStorage.setItem(RENDER_LS_KEY, JSON.stringify(render_opts)); } catch (e) {}
+}
+
+// theme → [r,g,b] base colour for lit pixels.
+const THEMES = {
+  blue:  [150,210,255], amber: [255,176,0], white: [235,240,248], green: [120,255,150],
+};
+
+// ESPHome-like drawing surface. Coordinates + alignment match it.* so a page
+// render function here can be transcribed line-for-line into the lambda.
+const it = {
+  clear() { octx.fillStyle = '#000'; octx.fillRect(0,0,W,H); octx.fillStyle = '#fff'; octx.strokeStyle = '#fff'; },
+  // align: TL TC TR ML MC MR BL BC BR  (T/M/B vertical, L/C/R horizontal)
+  // Proportional TTF rendered then thresholded to 1-bit — mirrors ESPHome
+  // rasterizing a gfonts:// font at bpp:1 on the mono SH1106.
+  // `weight` is optional (defaults 400); `color` 'black' enables inverted text
+  // on a white fillRect (alarm banner).
+  text(x, y, size, align, str, color, weight) {
+    octx.fillStyle = color === 'black' ? '#000' : '#fff';
+    // Snap to the font's pixel grid so a real pixel font lands on whole pixels
+    // and stays crisp through the 1-bit threshold.
+    const grid = FONT_GRID[render_opts.font] || 1;
+    const snapped = Math.max(grid, Math.round(size / grid) * grid);
+    octx.font = `${weight || 400} ${snapped}px ${activeFontCss()}`;
+    const h = align[0], v = align[1] || 'L';
+    octx.textAlign = v === 'L' ? 'left' : v === 'C' ? 'center' : 'right';
+    octx.textBaseline = h === 'T' ? 'top' : h === 'M' ? 'middle' : 'alphabetic';
+    octx.fillText(str, x, y);
+  },
+  line(x1,y1,x2,y2){ octx.strokeStyle='#fff'; octx.lineWidth=1; octx.beginPath(); octx.moveTo(x1+0.5,y1+0.5); octx.lineTo(x2+0.5,y2+0.5); octx.stroke(); },
+  rect(x,y,w,h){ octx.strokeStyle='#fff'; octx.lineWidth=1; octx.strokeRect(x+0.5,y+0.5,w-1,h-1); },
+  fillRect(x,y,w,h){ octx.fillStyle='#fff'; octx.fillRect(x,y,w,h); },
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Data model — names match the ESPHome sensor ids.
+// ─────────────────────────────────────────────────────────────────────────
+const data = {
+  connected: 1, handle: 'standby', bstate: 'off', mode: 'clean',
+  intensity: 'low', time: 48, target: 120, batt: 62, press: 0,
+};
+
+const MODE_LABEL = {
+  clean:'Clean', white_plus:'White+', gum_health:'Gum Health',
+  deep_clean_plus:'Deep Clean+', sensitive:'Sensitive', tongue_care:'Tongue',
+};
+const STATE_LABEL = {
+  off:'Idle', on:'Brushing', pause:'Paused',
+  session_complete:'Complete', session_aborted:'Stopped',
+};
+const cap = s => s ? s.charAt(0).toUpperCase()+s.slice(1) : s;
+const mmss = t => `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`;
+
+// ─────────────────────────────────────────────────────────────────────────
+// PAGES — each is {name, render}. This is the actual design under review.
+// ─────────────────────────────────────────────────────────────────────────
+const PRESSURE_WARN = 250;  // grams — brush flags "too high" around here
+
+const PAGES = [
+  {
+    name: 'Brushing',
+    render() {
+      if (!data.connected) return drawIdle();
+      const brushing = data.bstate === 'on' || data.bstate === 'pause';
+
+      // Top status strip + small battery glyph top-right
+      it.text(0, 0, 11, 'TL', STATE_LABEL[data.bstate] || cap(data.bstate), null, 500);
+      drawBatteryGlyph(112, 1, data.batt);
+
+      // Hero timer
+      it.text(64, 12, 26, 'TC', mmss(data.time), null, 700);
+
+      // Progress bar toward routine length
+      const frac = data.target > 0 ? Math.min(1, data.time / data.target) : 0;
+      it.rect(0, 45, 128, 8);
+      it.fillRect(1, 46, Math.round((128 - 2) * frac), 6);
+
+      // Bottom: mode (left) + intensity (right, only while brushing)
+      it.text(0, 55, 11, 'TL', MODE_LABEL[data.mode] || cap(data.mode));
+      if (brushing)
+        it.text(128, 55, 11, 'TR', cap(data.intensity));
+    }
+  },
+  {
+    name: 'Status',
+    render() {
+      if (!data.connected) return drawIdle();
+      // Battery: big glyph + percentage
+      drawBatteryGlyph(0, 3, data.batt, true);
+      it.text(42, 1, 16, 'TL', `${data.batt}%`, null, 500);
+      it.line(0, 22, 128, 22);
+      // Handle / mode / routine (pressure now lives on its own warning page)
+      it.text(0, 26, 11, 'TL', `Handle: ${cap(data.handle)}`);
+      it.text(0, 39, 11, 'TL', `Mode: ${MODE_LABEL[data.mode] || cap(data.mode)}`);
+      it.text(0, 52, 11, 'TL', `Routine: ${data.target}s`);
+    }
+  },
+  {
+    name: 'Pressure',
+    render() {
+      if (!data.connected) return drawIdle();
+      const brushing = data.bstate === 'on' || data.bstate === 'pause';
+      if (!brushing) {
+        it.text(64, 18, 16, 'MC', 'Pressure');
+        it.text(64, 40, 11, 'MC', 'No active session');
+        return;
+      }
+      if (data.press >= PRESSURE_WARN) {
+        // Inverted alarm banner: white block, black text — hard to miss.
+        it.fillRect(0, 0, 128, 24);
+        it.text(64, 4, 16, 'TC', 'TOO HARD!', 'black', 700);
+        it.text(64, 30, 11, 'TC', 'Ease off the pressure');
+      } else {
+        it.text(0, 2, 11, 'TL', 'Pressure');
+        it.text(128, 0, 18, 'TR', `${data.press}g`, null, 500);
+      }
+      // Pressure bar + "too high" threshold tick
+      const pf = Math.min(1, data.press / 350);
+      it.rect(0, 50, 128, 12);
+      it.fillRect(1, 51, Math.round(126 * pf), 10);
+      const tx = Math.round(126 * (PRESSURE_WARN / 350));
+      it.line(tx, 47, tx, 62);
+    }
+  },
+];
+
+function drawIdle() {
+  it.text(64, 18, 16, 'MC', 'Sonicare', null, 500);
+  it.text(64, 40, 11, 'MC', 'Waiting for brush…');
+}
+
+// Battery glyph. small=14×7 outline+nub; big=28×12.
+function drawBatteryGlyph(x, y, pct, big=false) {
+  const w = big ? 28 : 14, h = big ? 12 : 7;
+  it.rect(x, y, w, h);
+  it.fillRect(x + w, y + Math.round(h*0.28), 2, Math.round(h*0.44)); // terminal nub
+  const fillW = Math.round((w - 4) * Math.min(1, Math.max(0, pct/100)));
+  if (fillW > 0) it.fillRect(x + 2, y + 2, fillW, h - 4);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Renderer: page → offscreen → threshold → upscale
+// ─────────────────────────────────────────────────────────────────────────
+let page = 0;
+function render() {
+  it.clear();
+  PAGES[page].render();
+
+  const o = render_opts;
+  const SCALE = o.scale;
+  const base = THEMES[o.theme] || THEMES.blue;
+  const onMul = o.on / 100;
+  const ON  = base.map(c => Math.round(c * onMul));
+  // Off colour is a dim tint of the on colour so the panel "glows" on theme.
+  const offMul = o.off / 100;
+  const OFF = base.map(c => Math.round(c * offMul));
+
+  // Resize the visible canvas to the chosen scale.
+  view.width = W * SCALE; view.height = H * SCALE;
+
+  const src = octx.getImageData(0, 0, W, H).data;
+  vctx.fillStyle = `rgb(${OFF.join(',')})`;
+  vctx.fillRect(0, 0, view.width, view.height);
+  vctx.fillStyle = `rgb(${ON.join(',')})`;
+  const sz = SCALE - o.gap;                 // lit-pixel footprint
+  const round = o.shape === 'round';
+  const r = sz / 2;
+  for (let py=0; py<H; py++) {
+    for (let px=0; px<W; px++) {
+      const i = (py*W+px)*4;
+      // ESPHome lights a mono pixel when the glyph's anti-aliased coverage
+      // crosses the threshold. The cutoff is configurable so the preview can
+      // match what your panel actually shows (default 128 ≈ 50% coverage).
+      const lum = src[i]*0.299 + src[i+1]*0.587 + src[i+2]*0.114;
+      if (lum >= o.lum) {
+        const dx = px*SCALE, dy = py*SCALE;
+        if (round) {
+          vctx.beginPath();
+          vctx.arc(dx + r, dy + r, r, 0, Math.PI*2);
+          vctx.fill();
+        } else {
+          vctx.fillRect(dx, dy, sz, sz);
+        }
+      }
+    }
+  }
+  document.getElementById('pageName').textContent =
+    `Page ${page+1}/${PAGES.length} · ${PAGES[page].name}`;
+  document.getElementById('fontInfo').textContent = `Font: ${describeFont()}`;
+}
+
+// Report the family the canvas actually rendered with — walks the CSS stack
+// for render_opts.font and returns the first family the browser has loaded.
+// This is what answers "which font am I looking at?" regardless of a stale
+// saved key falling through to a fallback.
+function describeFont() {
+  const key = render_opts.font;
+  const css = activeFontCss();
+  const families = (css.match(/"([^"]+)"/g) || []).map(s => s.replace(/"/g, ''));
+  for (const fam of families) {
+    if (document.fonts && document.fonts.check(`16px "${fam}"`)) {
+      if (key === 'custom') return `${fam} (custom — loaded ✓)`;
+      const g = FONT_GFONTS[key];
+      return g ? `${fam}  →  gfonts://${g}` : `${fam}`;
+    }
+  }
+  // No quoted family loaded → the browser's default monospace is in use.
+  const want = families[0];
+  if (key === 'system_mono')
+    return 'browser default monospace (no gfonts — not reproducible on device)';
+  if (key === 'custom')
+    return `"${want}" NOT installed → browser default monospace (not on device)`;
+  return `browser default monospace (fallback — "${want}" not loaded)`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wiring
+// ─────────────────────────────────────────────────────────────────────────
+const pager = document.getElementById('pager');
+PAGES.forEach((p,i) => {
+  const b = document.createElement('button');
+  b.textContent = p.name;
+  b.onclick = () => { page = i; syncPager(); render(); };
+  pager.appendChild(b);
+});
+function syncPager(){ [...pager.children].forEach((b,i)=>b.classList.toggle('active', i===page)); }
+
+const bind = (id, key, isNum=false) => {
+  const el = document.getElementById(id);
+  el.value = data[key];
+  el.addEventListener('input', () => {
+    data[key] = isNum ? Number(el.value) : el.value;
+    refreshVals(); render();
+  });
+};
+bind('connected','connected',true); bind('handle','handle'); bind('bstate','bstate');
+bind('mode','mode'); bind('intensity','intensity');
+bind('time','time',true); bind('target','target',true);
+bind('batt','batt',true); bind('press','press',true);
+
+// Rendering panel → render_opts
+const bindRender = (id, key, isNum=true) => {
+  const el = document.getElementById(id);
+  el.value = render_opts[key];
+  el.addEventListener('input', () => {
+    render_opts[key] = isNum ? Number(el.value) : el.value;
+    persistRender(); refreshVals(); render();
+  });
+};
+bindRender('r_font','font',false);
+
+// Dynamically pull a family from Google Fonts so the custom box can preview
+// ANY gfont by name (not just the ones <link>ed in <head>). We inject a
+// stylesheet per family once, then document.fonts.load() forces the browser to
+// fetch it and we re-render when ready. The same name maps to gfonts://<name>
+// on-device, so whatever previews here is reproducible in the firmware.
+const _gfontLoaded = new Set();
+function loadGoogleFont(family) {
+  const fam = family.trim();
+  if (!fam || _gfontLoaded.has(fam)) return;
+  _gfontLoaded.add(fam);
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = `https://fonts.googleapis.com/css2?family=${
+    encodeURIComponent(fam).replace(/%20/g, '+')}:wght@400;500;700&display=swap`;
+  document.head.appendChild(link);
+  // Force-load common weights, then redraw once the glyphs are available.
+  if (document.fonts && document.fonts.load) {
+    Promise.allSettled([
+      document.fonts.load(`16px "${fam}"`),
+      document.fonts.load(`700 16px "${fam}"`),
+    ]).then(render);
+  }
+}
+
+// Typing a custom family auto-switches the dropdown to "custom" so the input
+// takes effect, and (debounced) fetches it from Google Fonts for preview.
+let _gfontTimer = null;
+document.getElementById('r_custom').addEventListener('input', () => {
+  const v = document.getElementById('r_custom').value;
+  render_opts.custom = v;
+  render_opts.font = 'custom';
+  document.getElementById('r_font').value = 'custom';
+  persistRender(); refreshVals(); render();
+  clearTimeout(_gfontTimer);
+  _gfontTimer = setTimeout(() => loadGoogleFont(v), 400);  // debounce keystrokes
+});
+bindRender('r_lum','lum'); bindRender('r_scale','scale'); bindRender('r_gap','gap');
+bindRender('r_shape','shape',false); bindRender('r_theme','theme',false);
+bindRender('r_on','on'); bindRender('r_off','off');
+document.getElementById('resetRender').addEventListener('click', () => {
+  Object.assign(render_opts, RENDER_DEFAULTS);
+  syncRenderInputs(); persistRender(); refreshVals(); render();
+});
+document.getElementById('copyRender').addEventListener('click', () => {
+  const txt = JSON.stringify(render_opts);
+  const el = document.getElementById('r_json');
+  el.value = txt; el.select();
+  if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(()=>{});
+});
+document.getElementById('applyRender').addEventListener('click', () => {
+  try {
+    const s = JSON.parse(document.getElementById('r_json').value);
+    if (s && typeof s === 'object') {
+      Object.assign(render_opts, s);
+      syncRenderInputs(); persistRender(); refreshVals(); render();
+    }
+  } catch (e) { alert('Could not parse settings JSON'); }
+});
+function syncRenderInputs(){
+  document.getElementById('r_font').value = render_opts.font;
+  document.getElementById('r_custom').value = render_opts.custom;
+  document.getElementById('r_lum').value = render_opts.lum;
+  document.getElementById('r_scale').value = render_opts.scale;
+  document.getElementById('r_gap').value = render_opts.gap;
+  document.getElementById('r_shape').value = render_opts.shape;
+  document.getElementById('r_theme').value = render_opts.theme;
+  document.getElementById('r_on').value = render_opts.on;
+  document.getElementById('r_off').value = render_opts.off;
+}
+
+function refreshVals(){
+  document.getElementById('timeVal').textContent = mmss(data.time);
+  document.getElementById('battVal').textContent = data.batt + '%';
+  document.getElementById('pressVal').textContent = data.press + 'g';
+  document.getElementById('r_lumVal').textContent = render_opts.lum;
+  document.getElementById('r_scaleVal').textContent = render_opts.scale + '×';
+  document.getElementById('r_gapVal').textContent = render_opts.gap;
+  document.getElementById('r_onVal').textContent = render_opts.on + '%';
+  document.getElementById('r_offVal').textContent = render_opts.off + '%';
+  document.getElementById('r_json').value = JSON.stringify(render_opts);
+}
+
+// Scenario presets. `page` (optional) auto-switches to the screen that best
+// shows that state — brushing → hero (0), charging/pressure → status (1).
+const SCEN = {
+  'Disconnected':     { page:0, connected:0 },
+  'Idle/standby':     { page:0, connected:1, handle:'standby', bstate:'off', press:0 },
+  'Brushing — start': { page:0, connected:1, handle:'run', bstate:'on', mode:'clean', intensity:'medium', time:8, press:60 },
+  'Brushing — mid':   { page:0, connected:1, handle:'run', bstate:'on', mode:'white_plus', intensity:'high', time:64, press:140 },
+  'Brushing — done':  { page:0, connected:1, handle:'run', bstate:'session_complete', mode:'gum_health', intensity:'high', time:120, press:0 },
+  'Too much pressure':{ page:2, connected:1, handle:'run', bstate:'on', mode:'deep_clean_plus', intensity:'high', time:38, press:300 },
+  'Paused':           { page:0, connected:1, handle:'run', bstate:'pause', mode:'clean', intensity:'low', time:25, press:0 },
+  'Charging':         { page:1, connected:1, handle:'charge', bstate:'off', time:0, batt:35, press:0 },
+};
+const scbox = document.getElementById('scenarios');
+Object.keys(SCEN).forEach(name => {
+  const b = document.createElement('button'); b.textContent = name;
+  b.onclick = () => {
+    const s = SCEN[name];
+    Object.assign(data, s);
+    if (typeof s.page === 'number') { page = s.page; syncPager(); }
+    ['connected','handle','bstate','mode','intensity','time','target','batt','press']
+      .forEach(k => { const el=document.getElementById(k); if(el) el.value = data[k]; });
+    refreshVals(); render();
+  };
+  scbox.appendChild(b);
+});
+
+// Font may load after first paint — re-render once ready for accurate metrics.
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+
+// If a custom gfont was saved from a prior session, fetch it now so the
+// restored design renders with the right family instead of the fallback.
+if (render_opts.font === 'custom' && render_opts.custom) loadGoogleFont(render_opts.custom);
+
+syncPager(); refreshVals(); render();
+</script>
+</body>
+</html>
